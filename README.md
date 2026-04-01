@@ -50,7 +50,7 @@ npm run dev
 
 ```bash
 cd D:\Projects\Podcast2Markdown
-claude --resume 99505d8a-8ab9-40f4-a9d7-9e41bdb4ba0e
+claude --resume 2a3ea8d3-cc7e-4522-88a8-744d1be5987b
 ```
 
 Claude Code 会自动读取当前目录的配置和上下文。
