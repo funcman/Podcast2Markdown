@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model AudioFile {
+  id        String   @id @default(cuid())
+  fileName  String
+  fileSize  Int
+  duration  Int
+  format    String
+  filePath  String
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transcript Transcript?
+}
+
+model Transcript {
+  id          String   @id @default(cuid())
+  audioFileId String   @unique
+  audioFile   AudioFile @relation(fields: [audioFileId], references: [id])
+  language    String
+  fullText    String
+  segments    String
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  article Article?
+}
+
+model Article {
+  id           String     @id @default(cuid())
+  transcriptId String     @unique
+  transcript   Transcript @relation(fields: [transcriptId], references: [id])
+  title        String
+  content      String
+  summary      String?
+  tags         String?
+  highlights   String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model Task {
+  id        String   @id @default(cuid())
+  type      String
+  status    String   @default("pending")
+  progress  Int      @default(0)
+  audioId   String?
+  result    String?
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
