@@ -59,10 +59,6 @@ if [ ! -f "$MODEL_PATH" ]; then
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE}" \
         -O "$MODEL_PATH" \
         2>/dev/null || \
-    wget --show-progress \
-        "https://cdn.ollama.ai/models/whisper.cpp/${MODEL_FILE}" \
-        -O "$MODEL_PATH" \
-        2>/dev/null || \
     curl -L --progress-bar \
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE}" \
         -o "$MODEL_PATH"
@@ -98,5 +94,5 @@ echo "Model: $MODEL_PATH"
 echo "Binary: $BUILD_DIR/whisper"
 echo ""
 echo "Test with:"
-echo "  $BUILD_DIR/whisper -m models/$MODEL_FILE -f samples/jfk.wav"
+echo "  whisper.cpp/build/whisper -m whisper.cpp/models/$MODEL_FILE -f whisper.cpp/samples/jfk.wav"
 echo "============================================"

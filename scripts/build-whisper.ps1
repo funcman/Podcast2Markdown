@@ -4,13 +4,15 @@
 # Requires: CMake, MSVC, CUDA Toolkit
 #
 # Usage:
-#   .\scripts\build-whisper.ps1          # Default: large model + CUDA
-#   .\scripts\build-whisper.ps1 small    # Small model
-#   .\scripts\build-whisper.ps1 -CPU     # CPU only
+#   .\scripts\build-whisper.ps1                    # Default: large model + CUDA
+#   .\scripts\build-whisper.ps1 small              # Small model
+#   .\scripts\build-whisper.ps1 -CPU               # CPU only
+#   .\scripts\build-whisper.ps1 large -GPUArch 86  # Specify GPU arch (RTX 3060 = 86)
 
 param(
     [string]$ModelSize = "large",
-    [switch]$CPU
+    [switch]$CPU,
+    [string]$GPUArch = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -42,9 +44,6 @@ function Test-Command($cmd) {
 $missing = @()
 if (-not (Test-Command "cmake")) { $missing += "CMake" }
 if (-not (Test-Command "git")) { $missing += "Git" }
-if (-not (Test-Command "ninja")) {
-    Write-Host "Ninja not found, will use MSBuild" -ForegroundColor Yellow
-}
 
 if ($missing.Count -gt 0) {
     Write-Host "Missing dependencies: $($missing -join ', ')" -ForegroundColor Red
@@ -53,6 +52,9 @@ if ($missing.Count -gt 0) {
 }
 
 $UseNinja = Test-Command "ninja"
+if (-not $UseNinja) {
+    Write-Host "Ninja not found, will use MSBuild" -ForegroundColor Yellow
+}
 
 if ($UseCUDA) {
     # Check if nvcc is available
@@ -75,6 +77,11 @@ if (Test-Path $WhisperDir) {
         Remove-Item -Recurse -Force $WhisperDir
     }
 }
+
+# Required for CCCL/CUDA 13.2+ with MSVC to avoid preprocessor error
+# Setting env var to suppress the error since /Zc:preprocessor doesn't propagate correctly
+$env:CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING = "1"
+Write-Host "  CCCL preprocessor warning suppressed via environment variable" -ForegroundColor Gray
 if ($needClone) {
     git clone --depth 1 --branch v1.7.1 https://github.com/ggerganov/whisper.cpp.git $WhisperDir
     if ($LASTEXITCODE -ne 0) {
@@ -103,28 +110,36 @@ if (-not (Test-Path $ModelPath)) {
     Write-Host "[2/3] Downloading ${ModelSize} model..." -ForegroundColor Green
     New-Item -ItemType Directory -Force -Path (Join-Path $WhisperDir "models") | Out-Null
 
-    $url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/models/$ModelFile"
+    $url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$ModelFile"
     Write-Host "  From: $url" -ForegroundColor Gray
 
     try {
         Invoke-WebRequest -Uri $url -OutFile $ModelPath -UseBasicParsing
         if ($LASTEXITCODE -ne 0) { throw "Download failed" }
     } catch {
-        Write-Host "Invoke-WebRequest failed, trying curl.exe..." -ForegroundColor Yellow
-        & curl.exe -L $url -o $ModelPath
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Model download failed - you can manually download later" -ForegroundColor Yellow
-            Write-Host "  URL: $url" -ForegroundColor Gray
+        Write-Host "Invoke-WebRequest failed, trying BITS..." -ForegroundColor Yellow
+        try {
+            Import-Module BitsTransfer -ErrorAction Stop
+            Start-BitsTransfer -Source $url -Destination $ModelPath -ErrorAction Stop
+        } catch {
+            Write-Host "BITS failed, trying curl.exe..." -ForegroundColor Yellow
+            & curl.exe -L $url -o $ModelPath
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Model download failed - you can manually download later" -ForegroundColor Yellow
+                Write-Host "  URL: $url" -ForegroundColor Gray
+            }
         }
     }
 } else {
     Write-Host "[2/3] Model already exists, skipping download" -ForegroundColor Gray
 }
 
-# Create build directory
-if (-not (Test-Path $BuildDir)) {
-    New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+# Create build directory (clean if exists)
+if (Test-Path $BuildDir) {
+    Write-Host "  Cleaning build directory..." -ForegroundColor Gray
+    Remove-Item -Recurse -Force $BuildDir
 }
+New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 Set-Location $BuildDir
 
 # Configure
@@ -134,17 +149,34 @@ $CMakeFlags = @("-DCMAKE_BUILD_TYPE=Release")
 
 if ($UseCUDA) {
     $CMakeFlags += "-DGGML_CUDA=ON"
-    Write-Host "  CUDA support enabled (GGML_CUDA)" -ForegroundColor Cyan
+    # CUDA 13.2+ requires /Zc:preprocessor and C++17 for CCCL/CUB compatibility
+    $CMakeFlags += "-DCMAKE_CUDA_FLAGS=-Xcompiler=/Zc:preprocessor"
+    $CMakeFlags += "-DCMAKE_CUDA_STANDARD=17"
+    $CMakeFlags += "-DCMAKE_CUDA_STANDARD_REQUIRED=ON"
+    if ($GPUArch) {
+        $CMakeFlags += "-DCMAKE_CUDA_ARCHITECTURES=$GPUArch"
+        Write-Host "  CUDA support enabled (GGML_CUDA, arch=$GPUArch, C++17)" -ForegroundColor Cyan
+    } else {
+        Write-Host "  CUDA support enabled (GGML_CUDA, C++17)" -ForegroundColor Cyan
+    }
 } else {
     Write-Host "  CPU only (CUDA disabled)" -ForegroundColor Gray
 }
 
 # Configure with CMake
 Write-Host "  Running CMake..." -ForegroundColor Gray
+# CCCL in CUDA 13.2+ requires multiple flags for compatibility
+$CommonFlags = @(
+    "-DCMAKE_C_FLAGS=/utf-8 /Zc:preprocessor"
+    "-DCMAKE_CXX_FLAGS=/utf-8 /Zc:preprocessor /DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING=1 /DCCCL_IGNORE_DEPRECATED_CPP_DIALECT=1"
+)
+
 if ($UseNinja) {
-    cmake .. @CMakeFlags -G Ninja -DCMAKE_C_FLAGS="/utf-8" -DCMAKE_CXX_FLAGS="/utf-8"
+    Write-Host "  Using Ninja generator" -ForegroundColor Gray
+    cmake .. @CMakeFlags @CommonFlags -G Ninja
 } else {
-    cmake .. @CMakeFlags -G "Visual Studio 17 2022" -A x64 -DCMAKE_C_FLAGS="/utf-8" -DCMAKE_CXX_FLAGS="/utf-8"
+    Write-Host "  Using Visual Studio 2022 generator" -ForegroundColor Gray
+    cmake .. @CMakeFlags @CommonFlags -G "Visual Studio 17 2022" -A x64
 }
 if ($LASTEXITCODE -ne 0) {
     Write-Host "CMake configure failed" -ForegroundColor Red
@@ -171,5 +203,5 @@ Write-Host "Model: $ModelPath"
 Write-Host "Binary: $BuildDir\bin\main.exe"
 Write-Host ""
 Write-Host "Test with:"
-Write-Host "  .\bin\main.exe -m models\$ModelFile -f samples\jfk.wav"
+Write-Host "  whisper.cpp\build\bin\main.exe -m whisper.cpp\models\$ModelFile -f whisper.cpp\samples\jfk.wav"
 Write-Host "============================================" -ForegroundColor Cyan
