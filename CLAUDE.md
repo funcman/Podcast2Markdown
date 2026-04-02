@@ -51,11 +51,11 @@ AudioFile ──1:1── Transcript ──1:1── Article
 ## Environment Variables
 
 ```bash
-WHISPER_API_KEY=       # Lingya Whisper API key
-WHISPER_API_BASE=      # Whisper API base URL
 MINIMAX_API_KEY=       # Minimax API key
 MINIMAX_API_BASE=      # Minimax API base URL
 DATABASE_URL=          # SQLite path (e.g., "file:./dev.db")
+WHISPER_MODEL_PATH=   # whisper.cpp model path (e.g., "whisper.cpp/models/ggml-base.bin")
+WHISPER_USE_CUDA=1    # Set to 0 for CPU only
 ```
 
 ## Architecture Notes

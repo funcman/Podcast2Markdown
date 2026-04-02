@@ -15,13 +15,13 @@ npm install
 创建 `.env` 文件：
 
 ```bash
-# 灵芽 Whisper API
-WHISPER_API_KEY=your_whisper_api_key
-WHISPER_API_BASE=https://api.lingyaai.cn/v1
-
 # MINIMAX API
 MINIMAX_API_KEY=your_minimax_api_key
 MINIMAX_API_BASE=https://api.minimaxi.com/v1
+
+# Whisper 本地转录（ whisper.cpp）
+WHISPER_MODEL_PATH=whisper.cpp/models/ggml-base.bin
+WHISPER_USE_CUDA=1
 
 # 数据库
 DATABASE_URL="file:./dev.db"
@@ -82,7 +82,7 @@ src/
 │   └── page.tsx       # 首页
 └── lib/
     ├── prisma.ts      # 数据库客户端
-    ├── whisper.ts     # 灵芽 Whisper
+    ├── whisper.ts     # whisper.cpp 本地转录
     └── minimax.ts     # Minimax API
 ```
 
