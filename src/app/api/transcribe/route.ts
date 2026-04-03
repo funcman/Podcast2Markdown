@@ -199,7 +199,16 @@ async function processTranscribe(taskId: string, audioId: string) {
 
   // 调用 Minimax 生成文章
   console.log(`[Transcribe] Calling Minimax API...`);
-  const articleResult = await generateArticle(transcriptResult.fullText);
+  const articleResult = await generateArticle(transcriptResult.fullText, {
+    onProgress: async (progress) => {
+      const taskProgress = 80 + Math.floor(progress * 0.2);
+      console.log(`[Transcribe] Minimax progress: ${progress}%, task progress: ${taskProgress}%`);
+      await prisma.task.update({
+        where: { id: taskId },
+        data: { progress: taskProgress },
+      });
+    },
+  });
 
   // 保存文章
   const article = await prisma.article.create({

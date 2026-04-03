@@ -15,6 +15,10 @@ export interface GenerateResult {
   summary: string;
 }
 
+export interface GenerateOptions {
+  onProgress?: (progress: number) => void;
+}
+
 const SYSTEM_PROMPT = `你是一个播客文字整理助手。请将以下转录文本整理成结构化Markdown文章。
 
 要求：
@@ -36,7 +40,11 @@ const SYSTEM_PROMPT = `你是一个播客文字整理助手。请将以下转录
   "summary": "摘要"
 }`;
 
-export async function generateArticle(transcript: string): Promise<GenerateResult> {
+export async function generateArticle(
+  transcript: string,
+  options: GenerateOptions = {}
+): Promise<GenerateResult> {
+  const { onProgress } = options;
   console.log(`[Minimax] Starting generation, transcript length: ${transcript.length}`);
 
   const requestBody = {
@@ -45,9 +53,10 @@ export async function generateArticle(transcript: string): Promise<GenerateResul
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: transcript },
     ],
+    stream: true,
   };
 
-  console.log(`[Minimax] Request body prepared, calling API...`);
+  console.log(`[Minimax] Request body prepared, calling API with streaming...`);
 
   const response = await fetch(`${MINIMAX_API_BASE}/chat/completions`, {
     method: "POST",
@@ -66,17 +75,59 @@ export async function generateArticle(transcript: string): Promise<GenerateResul
     throw new Error(`Minimax API error: ${response.status} - ${errorText}`);
   }
 
-  const data = await response.json();
-  console.log(`[Minimax] Response data:`, JSON.stringify(data).slice(0, 500));
+  if (!response.body) {
+    throw new Error("Minimax response body is null");
+  }
 
-  const content = data.choices?.[0]?.message?.content;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullContent = "";
+  let lastProgress = 0;
 
-  if (!content) {
+  console.log(`[Minimax] Reading stream...`);
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split("\n").filter((line) => line.trim() !== "");
+
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const dataStr = line.slice(6);
+        if (dataStr === "[DONE]") continue;
+
+        try {
+          const data = JSON.parse(dataStr);
+          const delta = data.choices?.[0]?.delta?.content;
+
+          if (delta) {
+            fullContent += delta;
+            const estimatedTotal = transcript.length * 0.25;
+            const progress = Math.min(
+              95,
+              Math.floor((fullContent.length / estimatedTotal) * 100)
+            );
+
+            if (progress > lastProgress && onProgress) {
+              lastProgress = progress;
+              onProgress(progress);
+            }
+          }
+        } catch {
+        }
+      }
+    }
+  }
+
+  console.log(`[Minimax] Stream completed, total length: ${fullContent.length}`);
+
+  if (!fullContent) {
     throw new Error("Minimax returned empty content");
   }
 
-  // 解析 JSON 响应
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  const jsonMatch = fullContent.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     throw new Error("Failed to parse Minimax response as JSON");
   }
