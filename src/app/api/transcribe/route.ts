@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { transcribe, init as initWhisper } from "@/lib/whisper";
 import { generateArticle } from "@/lib/minimax";
 import path from "path";
+import { writeFile } from "fs/promises";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
 
 export const runtime = "nodejs";
@@ -176,7 +177,6 @@ async function processTranscribe(taskId: string, audioId: string) {
     data: { progress: 60 },
   });
 
-  // 保存转录结果
   const transcript = await prisma.transcript.create({
     data: {
       audioFileId: audioId,
@@ -186,6 +186,11 @@ async function processTranscribe(taskId: string, audioId: string) {
       status: "completed",
     },
   });
+
+  const uploadDir = path.join(process.cwd(), "uploads", audioId);
+  const rawTextPath = path.join(uploadDir, "raw.txt");
+  await writeFile(rawTextPath, transcriptResult.fullText, "utf-8");
+  console.log(`[Transcribe] Raw transcript saved to: ${rawTextPath}`);
 
   await prisma.audioFile.update({
     where: { id: audioId },
@@ -240,6 +245,9 @@ async function processTranscribe(taskId: string, audioId: string) {
           tags: articleResult.tags,
           highlights: articleResult.highlights,
           summary: articleResult.summary,
+        },
+        transcript: {
+          fullText: transcriptResult.fullText,
         },
       }),
     },

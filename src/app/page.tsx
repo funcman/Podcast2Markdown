@@ -170,6 +170,22 @@ export default function Home() {
               <div className="text-sm text-gray-500 mb-4">
                 标签: {result.extracted?.tags?.join(", ")}
               </div>
+              
+              {result.transcript?.fullText && (
+                <div className="mb-4">
+                  <details className="bg-gray-100 rounded">
+                    <summary className="px-4 py-2 cursor-pointer font-medium text-gray-700 hover:bg-gray-200 rounded">
+                      原始转录文字
+                    </summary>
+                    <div className="p-4 bg-gray-50 overflow-auto max-h-64">
+                      <pre className="whitespace-pre-wrap text-sm text-gray-600">
+                        {result.transcript.fullText}
+                      </pre>
+                    </div>
+                  </details>
+                </div>
+              )}
+              
               <div className="bg-gray-50 rounded p-4 overflow-auto max-h-96">
                 <pre className="whitespace-pre-wrap text-sm" id="markdown-content">
                   {result.article?.content}
