@@ -88,10 +88,17 @@ Recommended: ggml-large.bin or ggml-medium.bin
 /**
  * Transcribe audio file using whisper.cpp subprocess
  */
+export interface TranscribeOptions {
+  language?: string;
+  onProgress?: (progress: number) => void;
+}
+
 export async function transcribe(
   audioPath: string,
-  language: string = 'zh'
+  options: TranscribeOptions = {}
 ): Promise<TranscribeResult> {
+  const { language = 'zh', onProgress } = options;
+  
   if (!isInitialized) {
     throw new Error('Whisper not initialized. Call whisper.init() first.');
   }
@@ -108,12 +115,20 @@ export async function transcribe(
   const outputJsonPath = join(audioDir, `${audioName}.json`);
   
   return new Promise((resolve, reject) => {
+    const timeoutMinutes = 30;
+    const timeout = setTimeout(() => {
+      console.error(`[Whisper] Timeout after ${timeoutMinutes} minutes`);
+      whisperProcess.kill('SIGTERM');
+      reject(new Error(`Whisper transcription timeout after ${timeoutMinutes} minutes`));
+    }, timeoutMinutes * 60 * 1000);
+    
     const args = [
       '-m', currentModelPath,
       '-f', audioPath,
       '-l', language,
-      '-oj',                 // Output JSON
-      '-of', join(audioDir, audioName)  // Output file path (without extension)
+      '-oj',
+      '-of', join(audioDir, audioName),
+      '-pp'
     ];
     
     if (!WHISPER_USE_CUDA) {
@@ -128,12 +143,37 @@ export async function transcribe(
     });
     
     let stderr = '';
+    let lastProgress = 0;
     
     whisperProcess.stderr.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      const output = data.toString();
+      stderr += output;
+      
+      console.log(`[Whisper stderr] ${output.trim()}`);
+      
+      const progressMatch = output.match(/whisper_print_progress_callback:\s*progress\s*=\s*(\d+)%/);
+      if (progressMatch) {
+        const progress = parseInt(progressMatch[1], 10);
+        console.log(`[Whisper] Matched progress: ${progress}%`);
+        if (progress !== lastProgress) {
+          lastProgress = progress;
+          if (onProgress) {
+            console.log(`[Whisper] Calling onProgress(${progress})`);
+            onProgress(progress);
+          }
+          process.stdout.write(`\r[Whisper] Progress: ${progress}%`);
+        }
+      }
+    });
+    
+    whisperProcess.stdout.on('data', (data: Buffer) => {
     });
     
     whisperProcess.on('close', (code: number | null) => {
+      clearTimeout(timeout);
+      process.stdout.write('\n');
+      console.log(`[Whisper] Process closed with code ${code}`);
+      
       if (code !== 0) {
         console.error(`[Whisper] Process exited with code ${code}`);
         console.error(`[Whisper] stderr: ${stderr}`);

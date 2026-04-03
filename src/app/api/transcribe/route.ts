@@ -89,9 +89,19 @@ async function processTranscribe(taskId: string, audioId: string) {
     const audioInfo = await getAudioInfo(sourcePath);
     console.log(`[Transcribe] Audio format: ${audioInfo.format}, duration: ${audioInfo.duration}s`);
 
-    if (audioInfo.format.toLowerCase() === "wav") {
-      // WAV 格式直接使用原始文件
-      console.log(`[Transcribe] WAV format detected, skipping conversion`);
+    if (audioInfo.format.toLowerCase() === "wav" && audioInfo.sampleRate === 16000) {
+      // WAV 格式且已经是 16kHz，直接使用原始文件
+      console.log(`[Transcribe] WAV 16kHz format detected, skipping conversion`);
+      audioPath = sourcePath;
+      // 更新 filePath 和时长
+      await prisma.audioFile.update({
+        where: { id: audioId },
+        data: {
+          filePath: sourcePath,
+          duration: audioInfo.duration,
+          status: "ready",
+        },
+      });
     } else {
       // 其他格式需要转换为 WAV
       console.log(`[Transcribe] Converting ${audioInfo.format} to WAV...`);
@@ -146,7 +156,18 @@ async function processTranscribe(taskId: string, audioId: string) {
   // 确保 Whisper 已初始化
   await ensureWhisperInitialized();
 
-  const transcriptResult = await transcribe(audioPath);
+  const transcriptResult = await transcribe(audioPath, {
+    language: 'zh',
+    onProgress: async (progress) => {
+      console.log(`[Transcribe] Whisper progress: ${progress}%`);
+      const taskProgress = 30 + Math.floor(progress * 0.3);
+      console.log(`[Transcribe] Updating task progress to ${taskProgress}%`);
+      await prisma.task.update({
+        where: { id: taskId },
+        data: { progress: taskProgress },
+      });
+    },
+  });
 
   console.log(`[Transcribe] Whisper completed, text length: ${transcriptResult.fullText.length}`);
 

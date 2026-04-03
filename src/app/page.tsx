@@ -12,14 +12,21 @@ export default function Home() {
 
   const handleUpload = async (file: File) => {
     setUploading(true);
+    setStatus("上传中...");
     const formData = new FormData();
     formData.append("file", file);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      
       const res = await fetch("/api/upload", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
       
       console.log("Upload response status:", res.status);
       const data = await res.json();
@@ -37,7 +44,11 @@ export default function Home() {
       startTranscribe(data.audioId);
     } catch (err) {
       console.error("Upload error:", err);
-      setStatus("上传失败: " + (err instanceof Error ? err.message : String(err)));
+      if (err instanceof Error && err.name === "AbortError") {
+        setStatus("上传超时: 文件太大或网络太慢");
+      } else {
+        setStatus("上传失败: " + (err instanceof Error ? err.message : String(err)));
+      }
     } finally {
       setUploading(false);
     }
@@ -59,6 +70,8 @@ export default function Home() {
     while (true) {
       const res = await fetch(`/api/task/${id}`);
       const data = await res.json();
+      
+      console.log("Poll status:", data);
       
       if (data.audioStatus === "converting") {
         setStatus("转换音频格式中...");

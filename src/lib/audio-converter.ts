@@ -33,8 +33,9 @@ export class FfmpegNotInstalledError extends Error {
  * 音频信息接口
  */
 export interface AudioInfo {
-  duration: number;  // 时长（秒）
-  format: string;    // 格式
+  duration: number;   // 时长（秒）
+  format: string;     // 格式
+  sampleRate?: number; // 采样率（Hz）
 }
 
 /**
@@ -75,9 +76,11 @@ export async function getAudioInfo(path: string): Promise<AudioInfo> {
         reject(new Error('Failed to get audio format information'));
         return;
       }
+      const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
       resolve({
         duration: parseFloat(String(metadata.format.duration || '0')),
-        format: metadata.format.format_name || 'unknown'
+        format: metadata.format.format_name || 'unknown',
+        sampleRate: audioStream?.sample_rate ? parseInt(String(audioStream.sample_rate)) : undefined
       });
     });
   });
