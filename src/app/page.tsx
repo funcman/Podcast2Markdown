@@ -171,16 +171,33 @@ export default function Home() {
                 标签: {result.extracted?.tags?.join(", ")}
               </div>
               <div className="bg-gray-50 rounded p-4 overflow-auto max-h-96">
-                <pre className="whitespace-pre-wrap text-sm">
+                <pre className="whitespace-pre-wrap text-sm" id="markdown-content">
                   {result.article?.content}
                 </pre>
               </div>
-              <button
-                onClick={() => window.open(`/api/export/${result.article?.id}`)}
-                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                下载 Markdown
-              </button>
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => {
+                    const content = result.article?.content;
+                    if (content) {
+                      navigator.clipboard.writeText(content).then(() => {
+                        alert("内容已复制到剪贴板");
+                      }).catch(() => {
+                        alert("复制失败，请手动复制");
+                      });
+                    }
+                  }}
+                  className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+                >
+                  复制内容
+                </button>
+                <button
+                  onClick={() => window.open(`/api/export/${result.article?.id}`)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  下载 Markdown
+                </button>
+              </div>
             </div>
           )}
         </div>
