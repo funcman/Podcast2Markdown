@@ -194,7 +194,7 @@ async function processTranscribe(taskId: string, audioId: string) {
 
   await prisma.task.update({
     where: { id: taskId },
-    data: { progress: 80 },
+    data: { progress: 80, status: "generating" },
   });
 
   // 调用 Minimax 生成文章

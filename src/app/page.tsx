@@ -79,6 +79,9 @@ export default function Home() {
       } else if (data.audioStatus === "transcribing" || data.status === "processing") {
         setStatus("转录中...");
         setProgress(data.progress);
+      } else if (data.status === "generating") {
+        setStatus("生成文章中...");
+        setProgress(data.progress);
       } else if (data.status === "completed") {
         setResult(data.result);
         setStatus("完成");
