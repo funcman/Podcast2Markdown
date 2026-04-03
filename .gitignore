@@ -46,3 +46,6 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Sisyphus
+.sisyphus/
