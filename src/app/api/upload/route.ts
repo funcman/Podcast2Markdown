@@ -24,20 +24,19 @@ export async function POST(request: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const ext = path.extname(file.name) || ".mp3";
-    const filePath = path.join(uploadDir, `audio${ext}`);
-    await writeFile(filePath, buffer);
-
-    // 估算时长（实际需要 ffprobe，这里用文件大小估算）
-    const estimatedDuration = Math.floor(buffer.length / (128 * 1024 / 8)); // 按 128kbps 估算
+    const originalFileName = `original${ext}`;
+    const originalPath = path.join(uploadDir, originalFileName);
+    await writeFile(originalPath, buffer);
 
     const audioFile = await prisma.audioFile.create({
       data: {
         id: audioId,
         fileName: file.name,
         fileSize: buffer.length,
-        duration: estimatedDuration,
+        duration: null,
         format: ext.slice(1),
-        filePath,
+        originalPath,
+        filePath: "",
         status: "pending",
       },
     });

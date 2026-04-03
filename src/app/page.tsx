@@ -20,12 +20,24 @@ export default function Home() {
         method: "POST",
         body: formData,
       });
+      
+      console.log("Upload response status:", res.status);
       const data = await res.json();
+      console.log("Upload response data:", data);
+      
+      if (!res.ok) {
+        throw new Error(data.error || `Upload failed: ${res.status}`);
+      }
+      
+      if (!data.audioId) {
+        throw new Error("No audioId returned from server");
+      }
+      
       setAudioId(data.audioId);
       startTranscribe(data.audioId);
     } catch (err) {
-      console.error(err);
-      setStatus("上传失败");
+      console.error("Upload error:", err);
+      setStatus("上传失败: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setUploading(false);
     }
@@ -47,18 +59,31 @@ export default function Home() {
     while (true) {
       const res = await fetch(`/api/task/${id}`);
       const data = await res.json();
-      setStatus(data.status === "processing" ? "转录中..." : data.status);
-      setProgress(data.progress);
-
-      if (data.status === "completed") {
+      
+      if (data.audioStatus === "converting") {
+        setStatus("转换音频格式中...");
+        setProgress(data.progress > 0 ? data.progress : 5);
+      } else if (data.audioStatus === "transcribing" || data.status === "processing") {
+        setStatus("转录中...");
+        setProgress(data.progress);
+      } else if (data.status === "completed") {
         setResult(data.result);
         setStatus("完成");
+        setProgress(100);
         break;
-      }
-      if (data.status === "failed") {
-        setStatus(data.error || "转录失败");
+      } else if (data.status === "failed") {
+        const errorMsg = data.error || "转录失败";
+        if (errorMsg.toLowerCase().includes("ffmpeg")) {
+          setStatus("ffmpeg_missing");
+        } else {
+          setStatus(errorMsg);
+        }
         break;
+      } else {
+        setStatus(data.status);
+        setProgress(data.progress);
       }
+      
       await new Promise((r) => setTimeout(r, 2000));
     }
   };
@@ -72,7 +97,13 @@ export default function Home() {
           <input
             type="file"
             accept="audio/*"
-            onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
+            onChange={(e) => {
+              console.log("File selected:", e.target.files);
+              if (e.target.files?.[0]) {
+                console.log("Starting upload for file:", e.target.files[0].name);
+                handleUpload(e.target.files[0]);
+              }
+            }}
             disabled={uploading}
             className="hidden"
             id="audio-upload"
@@ -88,8 +119,26 @@ export default function Home() {
       ) : (
         <div className="space-y-4">
           <div className="bg-gray-100 rounded-lg p-4">
-            <p className="font-medium">状态: {status}</p>
-            {progress > 0 && (
+            <p className="font-medium">状态: {status === "ffmpeg_missing" ? "FFmpeg 未安装" : status}</p>
+            {status === "ffmpeg_missing" ? (
+              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                <h3 className="text-red-800 font-bold mb-2">系统未安装 FFmpeg</h3>
+                <p className="text-red-600 mb-3">请安装 FFmpeg 后重试：</p>
+                <ul className="text-sm text-red-700 space-y-1 mb-3">
+                  <li><code className="bg-red-100 px-2 py-1 rounded">Windows:</code> winget install Gyan.FFmpeg</li>
+                  <li><code className="bg-red-100 px-2 py-1 rounded">macOS:</code> brew install ffmpeg</li>
+                  <li><code className="bg-red-100 px-2 py-1 rounded">Ubuntu:</code> sudo apt install ffmpeg</li>
+                </ul>
+                <a
+                  href="https://ffmpeg.org/download.html"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-800 text-sm underline"
+                >
+                  安装指南: https://ffmpeg.org/download.html
+                </a>
+              </div>
+            ) : progress > 0 && (
               <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all"
