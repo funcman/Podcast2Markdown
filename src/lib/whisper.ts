@@ -1,23 +1,14 @@
 /**
  * whisper.ts
  *
- * Node.js wrapper for whisper.cpp with CUDA support.
- * Uses the native whisper_addon module.
- *
- * Build order:
- *   1. ./scripts/build-whisper.sh    # Build whisper.cpp with CUDA
- *   2. npm run build:addon            # Build this native addon
- *
- * Usage:
- *   import { init, transcribe } from './lib/whisper';
- *   await init({ model: 'path/to/model.bin', cuda: true });
- *   const result = await transcribe('/path/to/audio.wav');
+ * Node.js wrapper for whisper.cpp using child process.
+ * Falls back to command line if native addon is not available.
  */
 
-import { existsSync } from 'fs';
-import { resolve } from 'path';
-
-// Environment configuration
+import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { resolve, dirname, basename, join } from 'path';
+import { spawn } from 'child_process';
+import { platform } from 'os';
 const WHISPER_MODEL_PATH = process.env.WHISPER_MODEL_PATH || 'whisper.cpp/models/ggml-large.bin';
 const WHISPER_USE_CUDA = process.env.WHISPER_USE_CUDA !== '0';
 
@@ -38,62 +29,37 @@ export interface WhisperConfig {
   cuda?: boolean;
 }
 
-// Global addon instance
-let addon: any = null;
 let isInitialized = false;
+let currentModelPath: string = '';
 
 /**
- * Load the native addon
+ * Get whisper.cpp binary path
  */
-function getAddon() {
-  if (addon) return addon;
-
-  const tryLoad = (paths: string[]) => {
-    for (const p of paths) {
-      try {
-        addon = require(p);
-        return true;
-      } catch {
-        continue;
-      }
+function getWhisperBinary(): string {
+  const isWindows = platform() === 'win32';
+  const binaryName = isWindows ? 'main.exe' : 'main';
+  
+  const possiblePaths = [
+    resolve(process.cwd(), 'whisper.cpp/build/bin', binaryName),
+    resolve(process.cwd(), 'whisper.cpp/build', binaryName),
+    resolve(process.cwd(), 'whisper.cpp', binaryName),
+  ];
+  
+  for (const p of possiblePaths) {
+    if (existsSync(p)) {
+      return p;
     }
-    return false;
-  };
-
-  if (tryLoad([
-    resolve(__dirname, '../addon/whisper_addon'),
-    resolve(__dirname, '../../build/Release/whisper_addon'),
-    resolve(__dirname, '../../build/Debug/whisper_addon'),
-  ])) {
-    return addon;
   }
-
-  throw new Error(`
-================================================================================
-Failed to load whisper_addon.native
-
-Build steps:
-  1. Build whisper.cpp with CUDA:
-     ./scripts/build-whisper.sh
-
-  2. Build this native addon:
-     npm run build:addon
-
-Or for manual build:
-  npm install node-addon-api node-gyp
-  npx node-gyp configure
-  npx node-gyp build --debug
-================================================================================
-`);
+  
+  throw new Error(`Whisper binary not found. Please build whisper.cpp first.\n` +
+    `Windows: powershell ./scripts/build-whisper.ps1\n` +
+    `Linux/macOS: ./scripts/build-whisper.sh`);
 }
 
 /**
  * Initialize Whisper with model
  */
 export async function init(config: WhisperConfig = {}): Promise<void> {
-  const whisper = getAddon();
-
-  // Default model path from env or config
   const modelPath = resolve(process.cwd(), config.model || WHISPER_MODEL_PATH);
   const useCuda = config.cuda ?? WHISPER_USE_CUDA;
 
@@ -108,21 +74,19 @@ Recommended: ggml-large.bin or ggml-medium.bin
 `);
   }
 
-  console.log(`[Whisper] Initializing: model=${modelPath}, cuda=${useCuda}`);
-
-  // Call init on the addon - returns object with success, modelPath, cudaEnabled
-  const result = whisper.WhisperAddon.init(modelPath, useCuda);
-
-  if (!result || !result.success) {
-    throw new Error(`Failed to initialize whisper: ${JSON.stringify(result)}`);
-  }
-
-  console.log(`[Whisper] Initialized successfully`);
+  // Check binary exists
+  const binaryPath = getWhisperBinary();
+  
+  console.log(`[Whisper] Initializing: model=${modelPath}, cuda=${useCuda}, binary=${binaryPath}`);
+  
+  currentModelPath = modelPath;
   isInitialized = true;
+  
+  console.log(`[Whisper] Initialized successfully (using subprocess mode)`);
 }
 
 /**
- * Transcribe audio file
+ * Transcribe audio file using whisper.cpp subprocess
  */
 export async function transcribe(
   audioPath: string,
@@ -138,40 +102,96 @@ export async function transcribe(
 
   console.log(`[Whisper] Transcribing: ${audioPath} (lang=${language})`);
 
-  const whisper = getAddon();
-  const result = whisper.WhisperAddon.transcribe(audioPath, language);
-
-  if (!result) {
-    throw new Error('Transcription returned null');
-  }
-
-  console.log(`[Whisper] Done: ${result.fullText.length} chars, ${result.segments?.length || 0} segments`);
-
-  return {
-    language: result.language || language,
-    fullText: result.fullText || '',
-    segments: (result.segments || []).map((s: any) => ({
-      start: s.start,
-      end: s.end,
-      text: s.text,
-    })),
-  };
+  const binaryPath = getWhisperBinary();
+  const audioDir = dirname(audioPath);
+  const audioName = basename(audioPath, '.wav');
+  const outputJsonPath = join(audioDir, `${audioName}.json`);
+  
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-m', currentModelPath,
+      '-f', audioPath,
+      '-l', language,
+      '-oj',                 // Output JSON
+      '-of', join(audioDir, audioName)  // Output file path (without extension)
+    ];
+    
+    if (!WHISPER_USE_CUDA) {
+      args.push('-ng');
+    }
+    
+    console.log(`[Whisper] Running: ${binaryPath} ${args.join(' ')}`);
+    
+    const whisperProcess = spawn(binaryPath, args, {
+      cwd: process.cwd(),
+      env: process.env
+    });
+    
+    let stderr = '';
+    
+    whisperProcess.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+    
+    whisperProcess.on('close', (code: number | null) => {
+      if (code !== 0) {
+        console.error(`[Whisper] Process exited with code ${code}`);
+        console.error(`[Whisper] stderr: ${stderr}`);
+        reject(new Error(`Whisper transcription failed: ${stderr || 'Unknown error'}`));
+        return;
+      }
+      
+      try {
+        // Read the JSON output file
+        if (!existsSync(outputJsonPath)) {
+          reject(new Error(`Whisper output file not found: ${outputJsonPath}`));
+          return;
+        }
+        
+        const jsonContent = readFileSync(outputJsonPath, 'utf-8');
+        console.log(`[Whisper] JSON content preview: ${jsonContent.substring(0, 500)}...`);
+        const result = JSON.parse(jsonContent);
+        
+        // Clean up the JSON file
+        try {
+          unlinkSync(outputJsonPath);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        
+        const segments: TranscriptSegment[] = (result.transcription || []).map((s: any) => ({
+          start: s.offsets?.from / 1000 || 0,  // 转换为秒
+          end: s.offsets?.to / 1000 || 0,
+          text: s.text?.trim() || ''
+        }));
+        
+        console.log(`[Whisper] Parsed ${segments.length} segments, first segment: ${JSON.stringify(segments[0])}`);
+        
+        const fullText = segments.map(s => s.text).join('');
+        
+        console.log(`[Whisper] Done: ${fullText.length} chars, ${segments.length} segments`);
+        
+        resolve({
+          language: result.result?.language || result.language || language,
+          fullText,
+          segments
+        });
+      } catch (e) {
+        reject(new Error(`Failed to parse whisper output: ${e}`));
+      }
+    });
+    
+    whisperProcess.on('error', (err: Error) => {
+      reject(new Error(`Failed to spawn whisper: ${err.message}`));
+    });
+  });
 }
 
 /**
- * Check if CUDA is available
+ * Check if CUDA is available (placeholder - always returns false for subprocess mode)
  */
 export async function isCudaAvailable(): Promise<boolean> {
-  try {
-    const whisper = getAddon();
-    const helpers = whisper.helpers;
-    if (helpers && typeof helpers.isCudaAvailable === 'function') {
-      return helpers.isCudaAvailable();
-    }
-    return false;
-  } catch {
-    return false;
-  }
+  return WHISPER_USE_CUDA;
 }
 
 /**
@@ -179,27 +199,6 @@ export async function isCudaAvailable(): Promise<boolean> {
  */
 export function isReady(): boolean {
   return isInitialized;
-}
-
-/**
- * Find default model path
- */
-function findDefaultModelPath(): string {
-  const candidates = [
-    resolve(process.cwd(), 'whisper.cpp/models/ggml-large.bin'),
-    resolve(process.cwd(), 'whisper.cpp/models/ggml-medium.bin'),
-    resolve(process.cwd(), 'models/ggml-large.bin'),
-    resolve(process.cwd(), 'models/ggml-medium.bin'),
-  ];
-
-  for (const p of candidates) {
-    if (existsSync(p)) {
-      return p;
-    }
-  }
-
-  // Return first candidate as default (will fail if not exists)
-  return candidates[0];
 }
 
 export default { init, transcribe, isCudaAvailable, isReady };
