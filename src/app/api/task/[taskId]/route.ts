@@ -16,9 +16,20 @@ export async function GET(
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
+    let audioStatus = null;
+    if (task.audioId) {
+      const audioFile = await prisma.audioFile.findUnique({
+        where: { id: task.audioId },
+      });
+      if (audioFile) {
+        audioStatus = audioFile.status;
+      }
+    }
+
     return NextResponse.json({
       status: task.status === "processing" ? "processing" : task.status,
       progress: task.progress,
+      audioStatus: audioStatus,
       result: task.result ? JSON.parse(task.result) : null,
       error: task.error,
     });

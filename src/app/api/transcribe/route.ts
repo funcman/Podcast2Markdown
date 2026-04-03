@@ -1,9 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { transcribeAudio } from "@/lib/whisper";
+import { transcribe, init as initWhisper } from "@/lib/whisper";
 import { generateArticle } from "@/lib/minimax";
+import path from "path";
+import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
 
 export const runtime = "nodejs";
+
+let whisperInitialized = false;
+
+async function ensureWhisperInitialized() {
+  if (!whisperInitialized) {
+    await initWhisper();
+    whisperInitialized = true;
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -49,6 +60,18 @@ async function processTranscribe(taskId: string, audioId: string) {
     data: { status: "processing", progress: 10 },
   });
 
+  // 转录前检测 ffmpeg 是否安装
+  const ffmpegInstalled = await isFfmpegInstalled();
+  if (!ffmpegInstalled) {
+    const errorMsg = "FFmpeg is not installed or not found in PATH";
+    console.error(`[Transcribe] ${errorMsg}`);
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { status: "failed", error: errorMsg },
+    });
+    return;
+  }
+
   // 获取音频文件
   const audioFile = await prisma.audioFile.findUnique({ where: { id: audioId } });
   if (!audioFile) {
@@ -57,6 +80,55 @@ async function processTranscribe(taskId: string, audioId: string) {
   }
 
   console.log(`[Transcribe] Found audio file: ${audioFile.fileName}, size: ${audioFile.fileSize}, path: ${audioFile.filePath}`);
+
+  // 检查音频格式，决定是否需要转换
+  let audioPath = audioFile.filePath;
+  const sourcePath = audioFile.originalPath || audioFile.filePath;
+  
+  try {
+    const audioInfo = await getAudioInfo(sourcePath);
+    console.log(`[Transcribe] Audio format: ${audioInfo.format}, duration: ${audioInfo.duration}s`);
+
+    if (audioInfo.format.toLowerCase() === "wav") {
+      // WAV 格式直接使用原始文件
+      console.log(`[Transcribe] WAV format detected, skipping conversion`);
+    } else {
+      // 其他格式需要转换为 WAV
+      console.log(`[Transcribe] Converting ${audioInfo.format} to WAV...`);
+      await prisma.audioFile.update({
+        where: { id: audioId },
+        data: { status: "converting" },
+      });
+
+      const outputPath = path.join(process.cwd(), "uploads", audioId, "converted.wav");
+      await convertToWav(sourcePath, outputPath);
+
+      // 转换完成后获取准确的时长信息
+      const convertedInfo = await getAudioInfo(outputPath);
+      console.log(`[Transcribe] Conversion complete, duration: ${convertedInfo.duration}s`);
+
+      // 更新 AudioFile 记录
+      audioPath = outputPath;
+      await prisma.audioFile.update({
+        where: { id: audioId },
+        data: {
+          filePath: outputPath,
+          duration: convertedInfo.duration,
+          status: "ready",
+        },
+      });
+    }
+  } catch (error) {
+    if (error instanceof FfmpegNotInstalledError) {
+      console.error(`[Transcribe] FFmpeg not installed: ${error.message}`);
+      await prisma.task.update({
+        where: { id: taskId },
+        data: { status: "failed", error: error.message },
+      });
+      return;
+    }
+    throw error;
+  }
 
   await prisma.audioFile.update({
     where: { id: audioId },
@@ -71,7 +143,10 @@ async function processTranscribe(taskId: string, audioId: string) {
 
   console.log(`[Transcribe] Calling Whisper API...`);
 
-  const transcriptResult = await transcribeAudio(audioFile.filePath);
+  // 确保 Whisper 已初始化
+  await ensureWhisperInitialized();
+
+  const transcriptResult = await transcribe(audioPath);
 
   console.log(`[Transcribe] Whisper completed, text length: ${transcriptResult.fullText.length}`);
 
