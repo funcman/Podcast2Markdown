@@ -73,7 +73,7 @@ export function generateArticle(
 ): Promise<GenerateResult> {
   const provider = resolveProvider();
   console.log(
-    `[AI] Provider: ${provider.id} (${provider.label}), model: ${provider.model}`
+    `[AI] Provider: ${provider.id} (${provider.label}), model: ${provider.model}, customPrompt=${options.systemPrompt ? "yes" : "no"}`
   );
   return generateArticleWithProvider(provider, transcript, options);
 }

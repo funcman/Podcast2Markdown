@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { transcribe, init as initWhisper } from "@/lib/whisper";
-import { generateArticle } from "@/lib/providers";
 import path from "path";
 import { writeFile } from "fs/promises";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
@@ -197,59 +196,11 @@ async function processTranscribe(taskId: string, audioId: string) {
     data: { status: "completed" },
   });
 
+  // 断点：转录完成，等待用户审核 / 修改 system prompt，再触发出生成步骤。
+  // 后续文章生成由 POST /api/generate 完成。
   await prisma.task.update({
     where: { id: taskId },
-    data: { progress: 80, status: "generating" },
+    data: { progress: 70, status: "waiting_for_prompt" },
   });
-
-  // 调用 AI provider 生成文章（方舟 Coding Plan 或 Minimax，见 src/lib/providers.ts）
-  console.log(`[Transcribe] Calling AI provider...`);
-  const articleResult = await generateArticle(transcriptResult.fullText, {
-    onProgress: async (progress) => {
-      const taskProgress = 80 + Math.floor(progress * 0.2);
-      console.log(`[Transcribe] Article progress: ${progress}%, task progress: ${taskProgress}%`);
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { progress: taskProgress },
-      });
-    },
-  });
-
-  // 保存文章
-  const article = await prisma.article.create({
-    data: {
-      transcriptId: transcript.id,
-      title: articleResult.title,
-      content: articleResult.content,
-      summary: articleResult.summary,
-      tags: JSON.stringify(articleResult.tags),
-      highlights: JSON.stringify(articleResult.highlights),
-    },
-  });
-
-  console.log(`[Transcribe] Article created: ${article.title}`);
-
-  // 完成任务 - 把完整结果放进去
-  await prisma.task.update({
-    where: { id: taskId },
-    data: {
-      status: "completed",
-      progress: 100,
-      result: JSON.stringify({
-        article: {
-          id: article.id,
-          title: article.title,
-          content: article.content,
-        },
-        extracted: {
-          tags: articleResult.tags,
-          highlights: articleResult.highlights,
-          summary: articleResult.summary,
-        },
-        transcript: {
-          fullText: transcriptResult.fullText,
-        },
-      }),
-    },
-  });
+  console.log(`[Transcribe] Task ${taskId} paused, waiting for prompt confirmation`);
 }

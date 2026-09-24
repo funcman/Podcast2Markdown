@@ -22,6 +22,8 @@ export interface GenerateResult {
 
 export interface GenerateOptions {
   onProgress?: (progress: number) => void;
+  /** 自定义 system prompt；不传则用默认 ARTICLE_SYSTEM_PROMPT */
+  systemPrompt?: string;
 }
 
 export interface ChatProvider {
@@ -71,7 +73,7 @@ export async function generateArticleWithProvider(
   transcript: string,
   options: GenerateOptions = {}
 ): Promise<GenerateResult> {
-  const { onProgress } = options;
+  const { onProgress, systemPrompt } = options;
   const { id, label, apiKey, baseURL, model } = provider;
   const progressRatio = provider.progressRatio ?? DEFAULT_PROGRESS_RATIO;
 
@@ -100,7 +102,7 @@ export async function generateArticleWithProvider(
     body: JSON.stringify({
       model,
       messages: [
-        { role: "system", content: ARTICLE_SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt?.trim() || ARTICLE_SYSTEM_PROMPT },
         { role: "user", content: transcript },
       ],
       stream: true,

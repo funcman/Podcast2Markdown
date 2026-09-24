@@ -50,13 +50,15 @@ model Article {
 }
 
 model Task {
-  id        String   @id @default(cuid())
-  type      String
-  status    String   @default("pending")
-  progress  Int      @default(0)
-  audioId   String?
-  result    String?
-  error     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  type         String
+  status       String   @default("pending")
+  // pending → processing → waiting_for_prompt → generating → completed | failed
+  progress     Int      @default(0)
+  audioId      String?
+  customPrompt String?  // 用户编辑后的提示词；为空则使用默认 ARTICLE_SYSTEM_PROMPT
+  result       String?
+  error        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
