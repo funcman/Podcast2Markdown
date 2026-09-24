@@ -7,7 +7,7 @@
 #   .\scripts\build-whisper.ps1                    # Default: large model + CUDA
 #   .\scripts\build-whisper.ps1 small              # Small model
 #   .\scripts\build-whisper.ps1 -CPU               # CPU only
-#   .\scripts\build-whisper.ps1 large -GPUArch 86  # Specify GPU arch (RTX 3060 = 86)
+#   .\scripts\build-whisper.ps1 large -GPUArch 86  # Specify GPU arch manually
 
 param(
     [string]$ModelSize = "large",
@@ -57,7 +57,6 @@ if (-not $UseNinja) {
 }
 
 if ($UseCUDA) {
-    # Check if nvcc is available
     $hasCUDA = Test-Command "nvcc"
     if (-not $hasCUDA) {
         Write-Host "CUDA requested but nvcc not found, disabling CUDA" -ForegroundColor Yellow
@@ -65,7 +64,92 @@ if ($UseCUDA) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Auto-detect GPU architecture from nvidia-smi
+# ---------------------------------------------------------------------------
+function Get-DetectedGPUArch() {
+    if (-not (Test-Command "nvidia-smi")) {
+        return $null
+    }
+
+    try {
+        $smiOutput = & nvidia-smi --query-gpu=name --format=csv,noheader 2>$null
+        if ($null -eq $smiOutput -or $smiOutput.Trim() -eq "") {
+            return $null
+        }
+        $gpuName = $smiOutput.Trim()
+        Write-Host "  Detected GPU: $gpuName" -ForegroundColor Gray
+
+        # Map GPU name -> compute architecture
+        # Format: @(displayName, arch) pairs, checked as substring matches
+        $gpuMap = @(
+            "RTX 5090", "100"       # Blackwell
+            "RTX 5080", "100"       # Blackwell
+            "RTX 5070", "100"       # Blackwell
+            "RTX 4090", "89"        # Ada Lovelace
+            "RTX 4080", "89"        # Ada Lovelace
+            "RTX 4070", "89"        # Ada Lovelace
+            "RTX 4060", "89"        # Ada Lovelace
+            "RTX 3090", "86"        # Ampere
+            "RTX 3080", "86"        # Ampere
+            "RTX 3070", "86"        # Ampere
+            "RTX 3060", "86"        # Ampere
+            "RTX 3050", "86"        # Ampere
+            "RTX A6000", "86"       # Ampere
+            "RTX A5000", "86"       # Ampere
+            "RTX A4000", "86"       # Ampere
+            "RTX A3000", "86"       # Ampere
+            "GTX 1660",  "75"       # Turing (no Tensor in consumer, but same arch)
+            "GTX 1650",  "75"       # Turing
+            "GTX 1080",  "61"       # Pascal
+            "GTX 1070",  "61"       # Pascal
+            "GTX 1060",  "61"       # Pascal
+            "GTX 1050",  "61"       # Pascal
+            "GTX 980",   "52"       # Maxwell
+            "GTX 970",   "52"       # Maxwell
+            "GTX 960",   "52"       # Maxwell
+            "GTX 750",   "52"       # Maxwell
+            "GTX 650",   "52"       # Maxwell
+            "TITAN X",   "52"       # Maxwell
+            "TITAN V",   "70"       # Volta
+            "V100",      "70"       # Volta
+            "A100",      "80"       # Ampere
+            "H100",      "90"       # Hopper
+            "H200",      "90"       # Hopper
+            "RTX 5000",  "75"       # Turing
+            "RTX 4000",  "75"       # Turing
+            "RTX 3000",  "75"       # Turing
+        )
+
+        foreach ($entry in $gpuMap) {
+            if ($gpuName -like "*$entry*") {
+                $arch = $entry
+                Write-Host "  Matched GPU arch: $arch" -ForegroundColor Gray
+                return $arch
+            }
+        }
+
+        Write-Host "  Unknown GPU, could not auto-detect arch. Using default." -ForegroundColor Yellow
+        return $null
+    } catch {
+        Write-Host "  nvidia-smi query failed: $_" -ForegroundColor Yellow
+        return $null
+    }
+}
+
+# Auto-detect if not specified
+if ($UseCUDA -and $GPUArch -eq "") {
+    $detected = Get-DetectedGPUArch
+    if ($null -ne $detected) {
+        $GPUArch = $detected
+    } else {
+        Write-Host "  Could not auto-detect GPU arch. Will let CMake auto-select." -ForegroundColor Yellow
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Clone whisper.cpp (skip if already exists and complete)
+# ---------------------------------------------------------------------------
 Write-Host "[1/3] Cloning whisper.cpp..." -ForegroundColor Green
 $needClone = $true
 if (Test-Path $WhisperDir) {
@@ -79,7 +163,6 @@ if (Test-Path $WhisperDir) {
 }
 
 # Required for CCCL/CUDA 13.2+ with MSVC to avoid preprocessor error
-# Setting env var to suppress the error since /Zc:preprocessor doesn't propagate correctly
 $env:CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING = "1"
 Write-Host "  CCCL preprocessor warning suppressed via environment variable" -ForegroundColor Gray
 if ($needClone) {
@@ -149,7 +232,6 @@ $CMakeFlags = @("-DCMAKE_BUILD_TYPE=Release")
 
 if ($UseCUDA) {
     $CMakeFlags += "-DGGML_CUDA=ON"
-    # CUDA 13.2+ requires /Zc:preprocessor and C++17 for CCCL/CUB compatibility
     $CMakeFlags += "-DCMAKE_CUDA_FLAGS=-Xcompiler=/Zc:preprocessor"
     $CMakeFlags += "-DCMAKE_CUDA_STANDARD=17"
     $CMakeFlags += "-DCMAKE_CUDA_STANDARD_REQUIRED=ON"
@@ -157,7 +239,7 @@ if ($UseCUDA) {
         $CMakeFlags += "-DCMAKE_CUDA_ARCHITECTURES=$GPUArch"
         Write-Host "  CUDA support enabled (GGML_CUDA, arch=$GPUArch, C++17)" -ForegroundColor Cyan
     } else {
-        Write-Host "  CUDA support enabled (GGML_CUDA, C++17)" -ForegroundColor Cyan
+        Write-Host "  CUDA support enabled (GGML_CUDA, auto-arch, C++17)" -ForegroundColor Cyan
     }
 } else {
     Write-Host "  CPU only (CUDA disabled)" -ForegroundColor Gray
@@ -165,7 +247,6 @@ if ($UseCUDA) {
 
 # Configure with CMake
 Write-Host "  Running CMake..." -ForegroundColor Gray
-# CCCL in CUDA 13.2+ requires multiple flags for compatibility
 $CommonFlags = @(
     "-DCMAKE_C_FLAGS=/utf-8 /Zc:preprocessor"
     "-DCMAKE_CXX_FLAGS=/utf-8 /Zc:preprocessor /DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING=1 /DCCCL_IGNORE_DEPRECATED_CPP_DIALECT=1"
@@ -175,7 +256,7 @@ if ($UseNinja) {
     Write-Host "  Using Ninja generator" -ForegroundColor Gray
     cmake .. @CMakeFlags @CommonFlags -G Ninja
 } else {
-    Write-Host "  Using Visual Studio 2022 generator" -ForegroundColor Gray
+    Write-Host "  Using Visual Studio generator" -ForegroundColor Gray
     cmake .. @CMakeFlags @CommonFlags -G "Visual Studio 17 2022" -A x64
 }
 if ($LASTEXITCODE -ne 0) {

@@ -23,70 +23,61 @@
 
 - Node.js 18+
 - Git
-- C/C++ 编译工具 (CMake)
+- CMake
 - **可选**: NVIDIA GPU + CUDA Toolkit (用于 GPU 加速)
 
-### 2. 安装依赖
+### 2. 安装 & 构建
 
 ```bash
+# 安装依赖（无需 C++ 编译工具）
 npm install
+
+# 构建 whisper.cpp（自动检测 GPU 架构，下载模型）
+npm run whisper:build
 ```
 
-### 3. 编译 whisper.cpp
+> whisper.cpp 构建参数：
+> - 指定模型：`npm run whisper:build -- small`（small / large）
+> - CPU 版本：`npm run whisper:build -- -CPU`
+> - 手动指定架构：`npm run whisper:build -- large -GPUArch 86`
 
-**Windows (PowerShell)**:
-```powershell
-# 自动构建（推荐）
-powershell ./scripts/build-whisper.ps1
+### 3. 配置环境变量
 
-# 指定模型大小
-powershell ./scripts/build-whisper.ps1 large   # 大模型（3.1GB，高质量）
-powershell ./scripts/build-whisper.ps1 small   # 小模型（466MB，快速）
-
-# CPU 版本（无 GPU）
-powershell ./scripts/build-whisper.ps1 -CPU
-```
-
-构建脚本会自动下载模型文件。
-
-### 4. 配置环境变量
-
-创建 `.env` 文件：
+复制 `.env.example` 为 `.env`，填入 AI Provider 的 API Key：
 
 ```bash
-# Whisper 本地转录配置
-WHISPER_MODEL_PATH=whisper.cpp/models/ggml-large-v3.bin
-WHISPER_USE_CUDA=1
+cp .env.example .env
+```
 
-# 文章生成 Provider（二选一；都配置时用 AI_PROVIDER 指定）
-AI_PROVIDER=ark
+必需配置：
 
-# 火山引擎方舟 Coding Plan（OpenAI 兼容，推荐）
+```bash
+# 文章生成 Provider（二选一）
+AI_PROVIDER=ark   # 火山引擎方舟 Coding Plan
+# AI_PROVIDER=minimax   # Minimax
+
+# 方舟（任选一个 Key）
 ARK_PLAN_API_KEY=your_ark_plan_api_key
-ARK_API_BASE=https://ark.cn-beijing.volces.com/api/coding/v3
-ARK_MODEL=deepseek-v4-1-flash-260910
-
-# MINIMAX API（备选）
+# 或者
 MINIMAX_API_KEY=your_minimax_api_key
-MINIMAX_API_BASE=https://api.minimaxi.com/v1
+```
 
-# 数据库
+可选配置：
+
+```bash
+WHISPER_MODEL_PATH=whisper.cpp/models/ggml-large.bin
+WHISPER_USE_CUDA=1   # 0 = CPU only
 DATABASE_URL="file:./dev.db"
 ```
 
-> **AI Provider 说明**：文章生成支持两个 OpenAI 兼容 provider。
-> 设置 `AI_PROVIDER=ark`（方舟 Coding Plan）或 `AI_PROVIDER=minimax` 可显式指定；
-> 不设置时自动探测：配置了 `ARK_PLAN_API_KEY`（或 `ARK_API_KEY`）就用方舟，否则用 Minimax。
-> 完整示例见 `.env.example`。
-
-### 5. 初始化数据库
+### 4. 初始化数据库
 
 ```bash
 npx prisma generate
 npx prisma db push
 ```
 
-### 6. 启动开发服务器
+### 5. 启动
 
 ```bash
 npm run dev
@@ -139,10 +130,10 @@ scripts/               # 构建脚本
 |------|------|
 | `npm run dev` | 启动开发服务器 |
 | `npm run build` | 构建生产版本 |
-| `npm run whisper:build` | 构建 whisper.cpp |
-| `npm run build:addon` | 编译 Node.js 原生插件 |
-| `npx prisma studio` | 打开数据库管理界面 |
-| `npx prisma db push` | 同步数据库 schema |
+| `npm run whisper:build` | 构建 whisper.cpp + 下载模型 |
+| `npm run db:generate` | 生成 Prisma Client |
+| `npm run db:push` | 同步数据库 schema |
+| `npm run db:studio` | 打开 Prisma 数据库管理界面 |
 
 ## 文档
 

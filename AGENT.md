@@ -252,6 +252,43 @@ MINIMAX_API_BASE=             # Default: https://api.minimaxi.com/v1
 MINIMAX_MODEL=                # Default: MiniMax-M2.7
 ```
 
+## Git Commit Conventions
+
+格式：
+```
+<type>: <中文简短描述>
+
+- 改动的具体内容（中文）
+```
+
+**type 前缀**（英文）：
+- `feat:` — 新功能
+- `refactor:` — 重构（不修 bug，不加功能）
+- `fix:` — Bug 修复
+- `docs:` — 仅文档改动
+- `chore:` — 依赖更新、工具、CI 等
+
+**规则**：
+- 每条 commit 只做一件逻辑事
+- 第一行 72 字以内，主体中文
+- bullet 点说清楚改了什么
+- 参考项目历史风格：`git log --oneline`
+
+示例：
+```
+feat: 添加 Minimax 流式输出支持
+
+- 在 minimax.ts 中实现 SSE 流式调用，透传进度回调
+- 更新 providers.ts，无 ARK Key 时自动路由到 Minimax
+```
+
+```
+refactor: 移除原生 Node.js addon
+
+- 删除 binding.gyp、whisper-addon.cc/h，subprocess 模式已覆盖全部场景
+- 移除 node-gyp 和 node-addon-api 依赖
+```
+
 ## Common Commands
 
 ```bash
@@ -260,13 +297,14 @@ npm run dev                   # Start dev server on http://localhost:3000
 npm run build                 # Build production version
 
 # Database
-npx prisma generate           # Generate Prisma client
-npx prisma db push            # Sync schema with database
-npx prisma studio             # Open database GUI
+npm run db:generate            # Generate Prisma client
+npm run db:push               # Sync schema with database
+npm run db:studio             # Open Prisma Studio GUI
 
 # whisper.cpp
-npm run whisper:build         # Build whisper.cpp (Windows PowerShell)
-powershell ./scripts/build-whisper.ps1  # Direct execution with model download
+npm run whisper:build         # Build whisper.cpp + download model (Windows PowerShell)
+powershell ./scripts/build-whisper.ps1  # Direct script execution with options
+# Options: small/large model, -CPU for CPU-only, -GPUArch N for manual arch
 
 # FFmpeg (required for audio conversion)
 # Windows: winget install Gyan.FFmpeg
