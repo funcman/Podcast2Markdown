@@ -252,6 +252,18 @@ MINIMAX_API_BASE=             # 默认: https://api.minimaxi.com/v1
 MINIMAX_MODEL=                # 默认: MiniMax-M2.7
 ```
 
+## Git 操作约束
+
+**除非用户明确要求，不要执行任何 git 写操作。** 具体规则：
+
+- **commit（提交）**：只在用户说"提交"、"git 提交"、"做个 commit"等明确要求时才执行。完成代码改动后不要主动提交。
+- **push（推送）**：用户必须显式说"push"、"推送"、"推到远程"等字样才执行。**绝不要在 commit 之后自动 push**，哪怕工作流看起来"自然"该推。
+- **其它写操作**（rebase、reset、merge、cherry-pick、amend 等）：同样需要用户显式指令。
+- **只读操作**（log、diff、status、show、reflog 等）可自由使用，做完任务汇报时也常引用。
+- **stash、branch -D、clean -fd 等可能丢数据的操作**：必须显式确认，不要猜测意图。
+
+如果不确定某步是否该做（例如用户只说了"提交"但没说"推送"），做之前先用简短一句话确认。
+
 ## Git Commit 规范
 
 格式：
