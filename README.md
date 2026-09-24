@@ -5,7 +5,7 @@
 ## 功能特性
 
 - 🎙️ **本地音频转录**：使用 whisper.cpp 本地推理，支持 CUDA GPU 加速
-- 🤖 **AI 文章生成**：调用 Minimax API 自动整理转录内容为结构化 Markdown
+- 🤖 **AI 文章生成**：支持火山引擎方舟 Coding Plan / Minimax，自动整理转录内容为结构化 Markdown
 - 📄 **Markdown 导出**：一键下载生成的文章为 Markdown 文件
 - ⚡ **异步处理**：任务队列管理，支持进度跟踪
 
@@ -15,7 +15,7 @@
 - **后端**: Next.js API Routes (Node.js)
 - **数据库**: SQLite + Prisma ORM
 - **语音转录**: whisper.cpp (本地 CUDA 加速)
-- **文章生成**: Minimax (MiniMax-M2.7)
+- **文章生成**: 火山引擎方舟 Coding Plan（默认）/ Minimax
 
 ## 快速开始
 
@@ -58,13 +58,26 @@ powershell ./scripts/build-whisper.ps1 -CPU
 WHISPER_MODEL_PATH=whisper.cpp/models/ggml-large-v3.bin
 WHISPER_USE_CUDA=1
 
-# MINIMAX API（文章生成）
+# 文章生成 Provider（二选一；都配置时用 AI_PROVIDER 指定）
+AI_PROVIDER=ark
+
+# 火山引擎方舟 Coding Plan（OpenAI 兼容，推荐）
+ARK_PLAN_API_KEY=your_ark_plan_api_key
+ARK_API_BASE=https://ark.cn-beijing.volces.com/api/coding/v3
+ARK_MODEL=deepseek-v4-1-flash-260910
+
+# MINIMAX API（备选）
 MINIMAX_API_KEY=your_minimax_api_key
 MINIMAX_API_BASE=https://api.minimaxi.com/v1
 
 # 数据库
 DATABASE_URL="file:./dev.db"
 ```
+
+> **AI Provider 说明**：文章生成支持两个 OpenAI 兼容 provider。
+> 设置 `AI_PROVIDER=ark`（方舟 Coding Plan）或 `AI_PROVIDER=minimax` 可显式指定；
+> 不设置时自动探测：配置了 `ARK_PLAN_API_KEY`（或 `ARK_API_KEY`）就用方舟，否则用 Minimax。
+> 完整示例见 `.env.example`。
 
 ### 5. 初始化数据库
 
@@ -85,7 +98,7 @@ npm run dev
 
 1. **上传音频**：在首页选择音频文件（支持 MP3、WAV、M4A 等格式）
 2. **等待转录**：系统自动调用 whisper.cpp 进行转录，显示进度
-3. **查看结果**：转录完成后自动调用 Minimax 生成 Markdown 文章
+3. **查看结果**：转录完成后自动调用 AI（方舟 Coding Plan / Minimax）生成 Markdown 文章
 4. **下载文章**：点击"下载 Markdown"按钮导出文件
 
 ## 项目结构
@@ -104,6 +117,8 @@ src/
 ├── lib/
 │   ├── prisma.ts      # Prisma 客户端
 │   ├── whisper.ts     # whisper.cpp 调用封装
+│   ├── providers.ts   # AI provider 选择与统一入口
+│   ├── ark.ts         # 火山方舟 Coding Plan 调用
 │   └── minimax.ts     # Minimax API 调用
 └── types/
     └── index.ts       # 类型定义

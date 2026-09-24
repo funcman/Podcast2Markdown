@@ -4,7 +4,7 @@ This file provides guidance to AI agents (Claude, Sisyphus, etc.) when working w
 
 ## Project Overview
 
-Podcast2Markdown is a Next.js application that converts podcast audio files into structured Markdown articles. It uses whisper.cpp for local audio transcription with CUDA acceleration and Minimax for AI-powered article generation.
+Podcast2Markdown is a Next.js application that converts podcast audio files into structured Markdown articles. It uses whisper.cpp for local audio transcription with CUDA acceleration and an OpenAI-compatible LLM API (Volcano Ark Coding Plan or Minimax) for AI-powered article generation.
 
 ## Tech Stack
 
@@ -14,7 +14,7 @@ Podcast2Markdown is a Next.js application that converts podcast audio files into
 - **Styling**: Tailwind CSS
 - **Audio Processing**: fluent-ffmpeg (system ffmpeg required)
 - **Audio Transcription**: whisper.cpp (local, CUDA-accelerated, via spawn subprocess)
-- **AI Generation**: Minimax API (MiniMax-M2.7)
+- **AI Generation**: Volcano Ark Coding Plan (default when `ARK_PLAN_API_KEY` is set) or Minimax, both via OpenAI-compatible `POST {baseURL}/chat/completions`
 
 ## Project Structure
 
@@ -33,6 +33,9 @@ src/
 ├── lib/
 │   ├── prisma.ts         # Prisma client singleton
 │   ├── whisper.ts        # whisper.cpp wrapper (subprocess spawn)
+│   ├── openai-compatible.ts # Shared OpenAI-compatible streaming client
+│   ├── providers.ts      # Provider selection + unified generateArticle()
+│   ├── ark.ts            # Volcano Ark Coding Plan client
 │   ├── minimax.ts        # Minimax API client
 │   ├── audio-converter.ts # FFmpeg audio conversion utilities
 │   └── utils.ts          # Utility functions
@@ -147,8 +150,8 @@ POST /api/transcribe
          │
          ▼
 ┌─────────────────┐
-│ Minimax API     │  status: processing (60%-80%)
-│ Generate Article│
+│ AI Provider     │  status: generating (80%-100%)
+│ Ark Plan/Minimax│
 └────────┬────────┘
          │
          ▼
@@ -203,11 +206,27 @@ Display result / Download Markdown
   }
   ```
 
+### src/lib/openai-compatible.ts
+- Shared engine for every OpenAI-compatible provider: SSE streaming, progress reporting, JSON extraction/normalization
+- Exports: `generateArticleWithProvider(provider, transcript, options)`, `ARTICLE_SYSTEM_PROMPT`, types `GenerateResult` / `Highlight` / `GenerateOptions` / `ChatProvider`
+
+### src/lib/providers.ts
+- Provider selection + unified entry point used by API routes
+- Exports: `generateArticle(transcript, options)`, `resolveProvider()`, `resolveProviderId()`
+- Selection: `AI_PROVIDER` (`ark` | `minimax`, aliases like `volcengine` / `coding-plan` accepted) → otherwise auto-detect (Ark key present → `ark`, else Minimax)
+- Throws a descriptive error when no provider key is configured
+
+### src/lib/ark.ts
+- Volcano Ark (火山引擎方舟) Coding Plan client, OpenAI-compatible
+- Exports: `generateArticle(transcript, options)`, `getArkProvider()`
+- Uses environment: `ARK_PLAN_API_KEY` (preferred) or `ARK_API_KEY`, `ARK_API_BASE`, `ARK_MODEL`
+- Defaults: `https://ark.cn-beijing.volces.com/api/coding/v3`, model `deepseek-v4-1-flash-260910`
+
 ### src/lib/minimax.ts
 - Minimax API client for article generation
-- Exports: `generateArticle(transcript)`
-- Returns: `{ title, content, tags, highlights, summary }`
-- Uses environment: `MINIMAX_API_KEY`, `MINIMAX_API_BASE`
+- Exports: `generateArticle(transcript)`, `getMinimaxProvider()`
+- Returns: `{ title, outline, content, tags, highlights, summary }`
+- Uses environment: `MINIMAX_API_KEY`, `MINIMAX_API_BASE`, `MINIMAX_MODEL`
 
 ### src/app/api/transcribe/route.ts
 - Async task processing with progress tracking
@@ -217,14 +236,20 @@ Display result / Download Markdown
 ## Environment Variables
 
 ```bash
-# Required
+# Required (at least one article-generation provider)
+AI_PROVIDER=                  # Optional: "ark" | "minimax"; unset = auto-detect
+ARK_PLAN_API_KEY=             # Volcano Ark Coding Plan API key (takes priority when set)
 MINIMAX_API_KEY=              # Minimax API key
 DATABASE_URL=                 # SQLite: "file:./dev.db"
 
 # Optional (with defaults)
 WHISPER_MODEL_PATH=           # Default: whisper.cpp/models/ggml-large-v3.bin
 WHISPER_USE_CUDA=             # Default: 1 (set to 0 for CPU only)
+ARK_API_KEY=                  # Ark fallback key used when ARK_PLAN_API_KEY is unset
+ARK_API_BASE=                 # Default: https://ark.cn-beijing.volces.com/api/coding/v3
+ARK_MODEL=                    # Default: deepseek-v4-1-flash-260910
 MINIMAX_API_BASE=             # Default: https://api.minimaxi.com/v1
+MINIMAX_MODEL=                # Default: MiniMax-M2.7
 ```
 
 ## Common Commands

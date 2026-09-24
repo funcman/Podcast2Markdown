@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { transcribe, init as initWhisper } from "@/lib/whisper";
-import { generateArticle } from "@/lib/minimax";
+import { generateArticle } from "@/lib/providers";
 import path from "path";
 import { writeFile } from "fs/promises";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
@@ -202,12 +202,12 @@ async function processTranscribe(taskId: string, audioId: string) {
     data: { progress: 80, status: "generating" },
   });
 
-  // 调用 Minimax 生成文章
-  console.log(`[Transcribe] Calling Minimax API...`);
+  // 调用 AI provider 生成文章（方舟 Coding Plan 或 Minimax，见 src/lib/providers.ts）
+  console.log(`[Transcribe] Calling AI provider...`);
   const articleResult = await generateArticle(transcriptResult.fullText, {
     onProgress: async (progress) => {
       const taskProgress = 80 + Math.floor(progress * 0.2);
-      console.log(`[Transcribe] Minimax progress: ${progress}%, task progress: ${taskProgress}%`);
+      console.log(`[Transcribe] Article progress: ${progress}%, task progress: ${taskProgress}%`);
       await prisma.task.update({
         where: { id: taskId },
         data: { progress: taskProgress },

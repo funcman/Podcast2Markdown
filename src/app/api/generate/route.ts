@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { generateArticle } from "@/lib/minimax";
+import { generateArticle } from "@/lib/providers";
 
 export const runtime = "nodejs";
 
