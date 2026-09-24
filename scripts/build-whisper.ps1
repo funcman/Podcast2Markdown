@@ -163,32 +163,75 @@ Set-Location $WhisperDir
 $ModelFile = "ggml-${ModelSize}.bin"
 $ModelPath = Join-Path $WhisperDir "models\$ModelFile"
 
-if (-not (Test-Path $ModelPath)) {
+# Minimum size thresholds (bytes) — well below actual model sizes to catch
+# truncated/corrupt downloads while allowing for future model variants.
+$ModelMinSizeMB = @{
+    "tiny"   = 50
+    "base"   = 100
+    "small"  = 400
+    "medium" = 1300
+    "large"  = 2700
+}
+$MinSizeBytes = ($ModelMinSizeMB[$ModelSize] ?? 50) * 1MB
+
+# Validate existing model file
+function Test-ModelValid($path, $minBytes) {
+    if (-not (Test-Path $path)) { return $false }
+    $size = (Get-Item $path).Length
+    if ($size -lt $minBytes) { return $false }
+
+    # Check ggml magic: "ggml" = 0x67676d6c (little-endian) at offset 0
+    try {
+        $stream = [System.IO.File]::OpenRead($path)
+        try {
+            $reader = New-Object System.IO.BinaryReader($stream)
+            $magic = $reader.ReadUInt32()
+            return ($magic -eq 0x67676d6c)
+        } finally { $stream.Close() }
+    } catch {
+        return $false
+    }
+}
+
+$ModelValid = Test-ModelValid $ModelPath $MinSizeBytes
+if ($ModelValid) {
+    Write-Host "[2/3] Model already exists, skipping download" -ForegroundColor Gray
+} else {
+    if (Test-Path $ModelPath) {
+        $existingSize = (Get-Item $ModelPath).Length
+        Write-Host "[2/3] Existing model file is invalid (size=$existingSize bytes), re-downloading..." -ForegroundColor Yellow
+        Remove-Item -Force $ModelPath
+    }
     Write-Host "[2/3] Downloading ${ModelSize} model..." -ForegroundColor Green
     New-Item -ItemType Directory -Force -Path (Join-Path $WhisperDir "models") | Out-Null
 
     $url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$ModelFile"
     Write-Host "  From: $url" -ForegroundColor Gray
 
+    $downloaded = $false
     try {
         Invoke-WebRequest -Uri $url -OutFile $ModelPath -UseBasicParsing
-        if ($LASTEXITCODE -ne 0) { throw "Download failed" }
+        if ($LASTEXITCODE -eq 0) { $downloaded = $true }
     } catch {
-        Write-Host "Invoke-WebRequest failed, trying BITS..." -ForegroundColor Yellow
+        Write-Host "  Invoke-WebRequest failed, trying BITS..." -ForegroundColor Yellow
         try {
             Import-Module BitsTransfer -ErrorAction Stop
             Start-BitsTransfer -Source $url -Destination $ModelPath -ErrorAction Stop
+            if ($LASTEXITCODE -eq 0) { $downloaded = $true }
         } catch {
-            Write-Host "BITS failed, trying curl.exe..." -ForegroundColor Yellow
+            Write-Host "  BITS failed, trying curl.exe..." -ForegroundColor Yellow
             & curl.exe -L $url -o $ModelPath
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "Model download failed - you can manually download later" -ForegroundColor Yellow
-                Write-Host "  URL: $url" -ForegroundColor Gray
-            }
+            if ($LASTEXITCODE -eq 0) { $downloaded = $true }
         }
     }
-} else {
-    Write-Host "[2/3] Model already exists, skipping download" -ForegroundColor Gray
+
+    if ($downloaded -and -not (Test-ModelValid $ModelPath $MinSizeBytes)) {
+        Write-Host "  Downloaded file is still invalid. Try a different model size or network." -ForegroundColor Red
+        Write-Host "  URL: $url" -ForegroundColor Gray
+    } elseif (-not $downloaded) {
+        Write-Host "Model download failed - you can manually download later" -ForegroundColor Yellow
+        Write-Host "  URL: $url" -ForegroundColor Gray
+    }
 }
 
 # Create build directory (clean if exists)
