@@ -80,50 +80,24 @@ function Get-DetectedGPUArch() {
         $gpuName = $smiOutput.Trim()
         Write-Host "  Detected GPU: $gpuName" -ForegroundColor Gray
 
-        # Map GPU name -> compute architecture
-        # Format: @(displayName, arch) pairs, checked as substring matches
-        $gpuMap = @(
-            "RTX 5090", "100"       # Blackwell
-            "RTX 5080", "100"       # Blackwell
-            "RTX 5070", "100"       # Blackwell
-            "RTX 4090", "89"        # Ada Lovelace
-            "RTX 4080", "89"        # Ada Lovelace
-            "RTX 4070", "89"        # Ada Lovelace
-            "RTX 4060", "89"        # Ada Lovelace
-            "RTX 3090", "86"        # Ampere
-            "RTX 3080", "86"        # Ampere
-            "RTX 3070", "86"        # Ampere
-            "RTX 3060", "86"        # Ampere
-            "RTX 3050", "86"        # Ampere
-            "RTX A6000", "86"       # Ampere
-            "RTX A5000", "86"       # Ampere
-            "RTX A4000", "86"       # Ampere
-            "RTX A3000", "86"       # Ampere
-            "GTX 1660",  "75"       # Turing (no Tensor in consumer, but same arch)
-            "GTX 1650",  "75"       # Turing
-            "GTX 1080",  "61"       # Pascal
-            "GTX 1070",  "61"       # Pascal
-            "GTX 1060",  "61"       # Pascal
-            "GTX 1050",  "61"       # Pascal
-            "GTX 980",   "52"       # Maxwell
-            "GTX 970",   "52"       # Maxwell
-            "GTX 960",   "52"       # Maxwell
-            "GTX 750",   "52"       # Maxwell
-            "GTX 650",   "52"       # Maxwell
-            "TITAN X",   "52"       # Maxwell
-            "TITAN V",   "70"       # Volta
-            "V100",      "70"       # Volta
-            "A100",      "80"       # Ampere
-            "H100",      "90"       # Hopper
-            "H200",      "90"       # Hopper
-            "RTX 5000",  "75"       # Turing
-            "RTX 4000",  "75"       # Turing
-            "RTX 3000",  "75"       # Turing
-        )
+        # Map GPU name -> compute architecture, using hashtable for correctness
+        $gpuMap = @{
+            "RTX 5090" = "100";  "RTX 5080" = "100";  "RTX 5070" = "100"  # Blackwell
+            "RTX 4090" = "89";   "RTX 4080" = "89";   "RTX 4070" = "89";   "RTX 4060" = "89"  # Ada Lovelace
+            "RTX 3090" = "86";   "RTX 3080" = "86";   "RTX 3070" = "86";   "RTX 3060" = "86";   "RTX 3050" = "86"  # Ampere
+            "RTX A6000" = "86";  "RTX A5000" = "86";  "RTX A4000" = "86";  "RTX A3000" = "86"  # Ampere
+            "GTX 1660"  = "75";  "GTX 1650"  = "75"   # Turing
+            "GTX 1080"  = "61";  "GTX 1070"  = "61";  "GTX 1060"  = "61";  "GTX 1050"  = "61"  # Pascal
+            "GTX 980"   = "52";  "GTX 970"   = "52";  "GTX 960"   = "52";  "GTX 750"   = "52";  "GTX 650"   = "52"  # Maxwell
+            "TITAN V"   = "70";  "V100"      = "70"   # Volta
+            "A100"      = "80"                       # Ampere
+            "H100"      = "90";  "H200"      = "90"   # Hopper
+            "RTX 5000"  = "75";  "RTX 4000"  = "75";  "RTX 3000"  = "75"  # Turing
+        }
 
-        foreach ($entry in $gpuMap) {
-            if ($gpuName -like "*$entry*") {
-                $arch = $entry
+        foreach ($gpuKey in $gpuMap.Keys) {
+            if ($gpuName -like "*$gpuKey*") {
+                $arch = $gpuMap[$gpuKey]
                 Write-Host "  Matched GPU arch: $arch" -ForegroundColor Gray
                 return $arch
             }
