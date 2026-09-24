@@ -4,10 +4,16 @@
 # Requires: CMake, MSVC, CUDA Toolkit
 #
 # Usage:
-#   .\scripts\build-whisper.ps1                    # Default: large model + CUDA
-#   .\scripts\build-whisper.ps1 small              # Small model
-#   .\scripts\build-whisper.ps1 -CPU               # CPU only
-#   .\scripts\build-whisper.ps1 large -GPUArch 86  # Specify GPU arch manually
+#   .\scripts\build-whisper.ps1                          # Default: large-v3 model + CUDA
+#   .\scripts\build-whisper.ps1 small                    # Small model
+#   .\scripts\build-whisper.ps1 large-v3-turbo           # Turbo (faster, slightly less accurate than v3)
+#   .\scripts\build-whisper.ps1 medium-q5_0              # Quantized medium (smaller, faster)
+#   .\scripts\build-whisper.ps1 ggml-large-v3-q5_0.bin   # Full filename form also accepted
+#   .\scripts\build-whisper.ps1 -CPU                     # CPU only
+#   .\scripts\build-whisper.ps1 large -GPUArch 86        # Specify GPU arch manually
+#
+# Aliases: tiny | base | small | medium | large (large => large-v3)
+# All models listed at https://huggingface.co/ggerganov/whisper.cpp are supported.
 
 param(
     [string]$ModelSize = "large",
@@ -160,19 +166,68 @@ if (Test-Path $OldBuildDir) {
 Set-Location $WhisperDir
 
 # Download model
-$ModelFile = "ggml-${ModelSize}.bin"
+# Accept any model name from the upstream list (https://huggingface.co/ggerganov/whisper.cpp):
+#   tiny, tiny.en, tiny-q5_1, tiny.en-q5_1, tiny-q8_0,
+#   base, base.en, base-q5_1, base.en-q5_1, base-q8_0,
+#   small, small.en, small.en-tdrz, small-q5_1, small.en-q5_1, small-q8_0,
+#   medium, medium.en, medium-q5_0, medium.en-q5_0, medium-q8_0,
+#   large-v1, large-v2, large-v2-q5_0, large-v2-q8_0,
+#   large-v3, large-v3-q5_0, large-v3-turbo, large-v3-turbo-q5_0, large-v3-turbo-q8_0
+# The tdrz variant lives in a separate repo (akashmjn/tinydiarize-whisper.cpp).
+# Convenience size aliases: tiny|base|small|medium|large (large => large-v3).
+$ValidModels = @(
+    "tiny", "tiny.en", "tiny-q5_1", "tiny.en-q5_1", "tiny-q8_0",
+    "base", "base.en", "base-q5_1", "base.en-q5_1", "base-q8_0",
+    "small", "small.en", "small.en-tdrz", "small-q5_1", "small.en-q5_1", "small-q8_0",
+    "medium", "medium.en", "medium-q5_0", "medium.en-q5_0", "medium-q8_0",
+    "large-v1", "large-v2", "large-v2-q5_0", "large-v2-q8_0",
+    "large-v3", "large-v3-q5_0", "large-v3-turbo", "large-v3-turbo-q5_0", "large-v3-turbo-q8_0"
+)
+$SizeAliasMap = @{
+    "tiny"   = "tiny"
+    "base"   = "base"
+    "small"  = "small"
+    "medium" = "medium"
+    "large"  = "large-v3"   # canonical large for highest accuracy; use large-v3-turbo explicitly for speed
+}
+
+# tdrz (tinydiarize) variants live in a separate HuggingFace repo
+$UseTdrz = $false
+
+# Strip an optional leading `ggml-` and trailing `.bin` so users can pass either form
+$Normalized = $ModelSize -replace '^ggml-', '' -replace '\.bin$', ''
+
+if ($SizeAliasMap.ContainsKey($Normalized)) {
+    $ModelName = $SizeAliasMap[$Normalized]
+} elseif ($ValidModels -contains $Normalized) {
+    $ModelName = $Normalized
+} else {
+    Write-Host "Unknown model '$ModelSize'." -ForegroundColor Red
+    Write-Host "Available sizes: $($ValidModels -join ', ')" -ForegroundColor Yellow
+    Write-Host "Aliases: tiny, base, small, medium, large" -ForegroundColor Yellow
+    exit 1
+}
+
+if ($ModelName -like "*-tdrz*") {
+    $UseTdrz = $true
+}
+
+$ModelFile = "ggml-${ModelName}.bin"
 $ModelPath = Join-Path $WhisperDir "models\$ModelFile"
 
-# Minimum size thresholds (bytes) — well below actual model sizes to catch
-# truncated/corrupt downloads while allowing for future model variants.
-$ModelMinSizeMB = @{
-    "tiny"   = 50
-    "base"   = 100
-    "small"  = 400
-    "medium" = 1300
-    "large"  = 2700
+# Minimum size threshold: well below any real model (smallest is ggml-tiny.bin ~75 MB).
+# Real check is the magic number; size threshold is a backstop.
+if ($ModelFile -match '^ggml-(tiny|base)\.') {
+    $MinSizeBytes = 30MB
+} elseif ($ModelFile -match '^ggml-small') {
+    $MinSizeBytes = 100MB
+} elseif ($ModelFile -match '^ggml-medium') {
+    $MinSizeBytes = 100MB   # also covers q5_1/q8_0 quantized variants (~500MB+)
+} elseif ($ModelFile -match '^ggml-large') {
+    $MinSizeBytes = 500MB   # covers full (~3.1 GB) and q5_1 quantized (~1.1 GB)
+} else {
+    $MinSizeBytes = 30MB
 }
-$MinSizeBytes = ($ModelMinSizeMB[$ModelSize] ?? 50) * 1MB
 
 # Validate existing model file
 function Test-ModelValid($path, $minBytes) {
@@ -205,24 +260,59 @@ if ($ModelValid) {
     Write-Host "[2/3] Downloading ${ModelSize} model..." -ForegroundColor Green
     New-Item -ItemType Directory -Force -Path (Join-Path $WhisperDir "models") | Out-Null
 
-    $url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$ModelFile"
+    if ($UseTdrz) {
+        $url = "https://huggingface.co/akashmjn/tinydiarize-whisper.cpp/resolve/main/$ModelFile"
+    } else {
+        $url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$ModelFile"
+    }
     Write-Host "  From: $url" -ForegroundColor Gray
 
+    # Download with progress display. Prefers curl.exe (Windows 10+ ships it; shows a
+    # nice progress bar natively). Falls back to Invoke-WebRequest with manual polling.
     $downloaded = $false
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $ModelPath -UseBasicParsing
+    $curlExe = (Get-Command curl.exe -ErrorAction SilentlyContinue)
+    if ($curlExe) {
+        # curl's native progress bar
+        & curl.exe -L --fail --retry 5 --retry-delay 5 --retry-all-errors --retry-connrefused `
+            --connect-timeout 30 -o "$ModelPath" "$url"
         if ($LASTEXITCODE -eq 0) { $downloaded = $true }
-    } catch {
-        Write-Host "  Invoke-WebRequest failed, trying BITS..." -ForegroundColor Yellow
-        try {
-            Import-Module BitsTransfer -ErrorAction Stop
-            Start-BitsTransfer -Source $url -Destination $ModelPath -ErrorAction Stop
-            if ($LASTEXITCODE -eq 0) { $downloaded = $true }
-        } catch {
-            Write-Host "  BITS failed, trying curl.exe..." -ForegroundColor Yellow
-            & curl.exe -L $url -o $ModelPath
-            if ($LASTEXITCODE -eq 0) { $downloaded = $true }
+    } else {
+        # Manual progress polling via Invoke-WebRequest. We kick off the download in the
+        # background (Start-Job) and watch the destination file's size.
+        Write-Host "  curl.exe not found, falling back to Invoke-WebRequest with manual progress" -ForegroundColor Yellow
+        $job = Start-Job -ScriptBlock {
+            param($u, $p)
+            try {
+                Invoke-WebRequest -Uri $u -OutFile $p -UseBasicParsing
+                exit 0
+            } catch { exit 1 }
+        } -ArgumentList $url, $ModelPath
+
+        $lastSize = -1
+        $stuckCount = 0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($job.State -eq 'Running') {
+            Start-Sleep -Seconds 1
+            if (Test-Path $ModelPath) {
+                $size = (Get-Item $ModelPath).Length
+                if ($size -gt 0) {
+                    $mb = [math]::Round($size / 1MB, 1)
+                    $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 0)
+                    Write-Host "`r  Downloaded: $mb MB  ($elapsed s)" -NoNewline -ForegroundColor Cyan
+                    if ($size -eq $lastSize) { $stuckCount++ } else { $stuckCount = 0 }
+                    $lastSize = $size
+                    if ($stuckCount -gt 5) {
+                        Write-Host "`n  No progress for 5s, aborting..." -ForegroundColor Yellow
+                        Stop-Job $job
+                        break
+                    }
+                }
+            }
         }
+        Write-Host ""
+        $exitCode = (Receive-Job $job -Keep) | Out-Null
+        Remove-Job $job -Force
+        if ($LASTEXITCODE -eq 0) { $downloaded = $true }
     }
 
     if ($downloaded -and -not (Test-ModelValid $ModelPath $MinSizeBytes)) {
