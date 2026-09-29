@@ -237,6 +237,14 @@ GET /api/task/[taskId]（每 2s 轮询）
 - 进度阶段: 10%（开始）→ 30%（转换中）→ 60%（转录中）→ 80%（生成中）→ 100%（完成）
 - 通过 try/catch + Task.error 更新做错误处理
 
+### src/lib/content-hash.ts + AudioFile.contentHash 断点复用
+- 上传时算原文件 SHA-256（流式，1MB 分块），写入 `AudioFile.contentHash`
+- 转录 task 启动时若 `!forceTranscribe` 且同 hash 有 `Transcript.status === 'completed'`，**复制**那份 transcript 关联到当前 audioId，跳过 ffmpeg 转换 + whisper，task 直接到 `waiting_for_prompt`
+- 适用场景：同一音频重传、whisper 跑完后重新跑 prompt 调优、转录任务失败重试
+- 注意：AudioFile ↔ Transcript 是 1:1（Prisma schema），所以是"复制内容 + 创建新 Transcript 行"，不是直接共用
+- 前端调用：`POST /api/transcribe` body `{ audioId, forceTranscribe?: boolean }`
+- 加 `forceTranscribe: true` 强制重跑（绕过缓存复用）
+
 ## 环境变量
 
 ```bash

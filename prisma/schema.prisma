@@ -16,10 +16,13 @@ model AudioFile {
   originalPath  String   // 原始文件路径
   filePath      String   // 转换后的文件路径
   status        String   @default("pending") // pending, converting, ready, transcribing, completed, failed
+  contentHash   String?  // 原始文件 SHA-256，用于跨任务复用 Transcript
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   transcript Transcript?
+
+  @@index([contentHash])
 }
 
 model Transcript {

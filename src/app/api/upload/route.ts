@@ -3,6 +3,7 @@ import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
+import { sha256File } from "@/lib/content-hash";
 
 export const runtime = "nodejs";
 
@@ -11,10 +12,10 @@ const MAX_FILE_SIZE = 1024 * 1024 * 1024;
 export async function POST(request: NextRequest) {
   try {
     console.log("[Upload] Starting upload request");
-    
+
     const formData = await request.formData();
     console.log("[Upload] FormData received");
-    
+
     const file = formData.get("file") as File | null;
 
     if (!file) {
@@ -43,16 +44,30 @@ export async function POST(request: NextRequest) {
     console.log(`[Upload] Reading file buffer...`);
     const buffer = Buffer.from(await file.arrayBuffer());
     console.log(`[Upload] Buffer read: ${buffer.length} bytes`);
-    
+
     const ext = path.extname(file.name) || ".mp3";
     const originalFileName = `original${ext}`;
     const originalPath = path.join(uploadDir, originalFileName);
-    
+
     console.log(`[Upload] Writing file to: ${originalPath}`);
     await writeFile(originalPath, buffer);
     console.log(`[Upload] File written successfully`);
 
-    console.log(`[Upload] Creating database record...`);
+    // 流式计算 SHA-256，用于跨任务复用 Transcript。
+    // 137 MB 音频在现代 CPU 上 200-500 ms 算完，不阻塞主流程太多。
+    let contentHash: string | null = null;
+    try {
+      const t0 = Date.now();
+      contentHash = await sha256File(originalPath);
+      console.log(
+        `[Upload] SHA-256 ${contentHash.slice(0, 12)}... in ${Date.now() - t0}ms`
+      );
+    } catch (e) {
+      console.error("[Upload] hash failed:", e);
+      // hash 失败不影响上传，只是不参与复用逻辑
+    }
+
+    console.log("[Upload] Creating database record...");
     const audioFile = await prisma.audioFile.create({
       data: {
         id: audioId,
@@ -63,6 +78,7 @@ export async function POST(request: NextRequest) {
         originalPath,
         filePath: "",
         status: "pending",
+        contentHash,
       },
     });
     console.log(`[Upload] Database record created: ${audioFile.id}`);

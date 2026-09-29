@@ -18,7 +18,8 @@ async function ensureWhisperInitialized() {
 
 export async function POST(request: NextRequest) {
   try {
-    const { audioId } = await request.json();
+    const body = await request.json();
+    const { audioId, forceTranscribe } = body as { audioId?: string; forceTranscribe?: boolean };
 
     if (!audioId) {
       return NextResponse.json({ error: "audioId required" }, { status: 400 });
@@ -35,8 +36,10 @@ export async function POST(request: NextRequest) {
     });
 
     // 异步处理转录
-    console.log(`[Transcribe] Created task ${task.id}, audioId: ${audioId}`);
-    processTranscribe(task.id, audioId).catch((err) => {
+    console.log(
+      `[Transcribe] Created task ${task.id}, audioId: ${audioId}, forceTranscribe=${!!forceTranscribe}`,
+    );
+    processTranscribe(task.id, audioId, !!forceTranscribe).catch((err) => {
       console.error(`[Transcribe] Task ${task.id} failed:`, err.message);
       // task 标 failed
       prisma.task.update({
@@ -57,7 +60,11 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function processTranscribe(taskId: string, audioId: string) {
+async function processTranscribe(
+  taskId: string,
+  audioId: string,
+  forceTranscribe: boolean,
+) {
   console.log(`[Transcribe] Task ${taskId} started for audio ${audioId}`);
 
   // 更新状态为处理中
@@ -85,12 +92,75 @@ async function processTranscribe(taskId: string, audioId: string) {
     throw new Error("Audio file not found");
   }
 
-  console.log(`[Transcribe] Found audio file: ${audioFile.fileName}, size: ${audioFile.fileSize}, path: ${audioFile.filePath}`);
+  console.log(
+    `[Transcribe] Found audio file: ${audioFile.fileName}, size: ${audioFile.fileSize}, hash: ${audioFile.contentHash?.slice(0, 12) ?? "n/a"}`,
+  );
+
+  // ===== 断点复用：检查同 contentHash 是否已有 completed Transcript =====
+  // 复用策略：
+  //   1. AudioFile.contentHash 必须存在（上传时算过）
+  //   2. !forceTranscribe（前端没强制要求重跑）
+  //   3. 库里有同 hash 且 transcript.status === 'completed' 的历史记录
+  // 满足条件 → 复制那份 transcript 关联到当前 audioId，跳过 ffmpeg + whisper。
+  if (!forceTranscribe && audioFile.contentHash) {
+    const cached = await prisma.audioFile.findFirst({
+      where: {
+        contentHash: audioFile.contentHash,
+        id: { not: audioId },
+        transcript: { status: "completed" },
+      },
+      include: { transcript: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    if (cached?.transcript) {
+      console.log(
+        `[Transcribe] Reusing transcript from audio ${cached.id} (hash ${audioFile.contentHash.slice(0, 12)})`,
+      );
+
+      // 新建一份 Transcript 关联到当前 audioId。
+      // （Prisma AudioFile ↔ Transcript 是 1:1，必须新建行不能复用）
+      await prisma.transcript.create({
+        data: {
+          audioFileId: audioId,
+          language: cached.transcript.language,
+          fullText: cached.transcript.fullText,
+          segments: cached.transcript.segments,
+          status: "completed",
+        },
+      });
+
+      // 把 raw.txt 也复制一份（生成文章步骤会读）
+      const uploadDir = path.join(process.cwd(), "uploads", audioId);
+      const rawTextPath = path.join(uploadDir, "raw.txt");
+      await writeFile(rawTextPath, cached.transcript.fullText, "utf-8");
+      console.log(`[Transcribe] Raw transcript copied to: ${rawTextPath}`);
+
+      await prisma.audioFile.update({
+        where: { id: audioId },
+        data: { status: "completed" }, // 复用 = 转录已完成（虽然没真跑）
+      });
+
+      await prisma.task.update({
+        where: { id: taskId },
+        data: { progress: 100, status: "waiting_for_prompt" },
+      });
+      console.log(
+        `[Transcribe] Task ${taskId} reused transcript, waiting for prompt confirmation`,
+      );
+      return;
+    }
+    console.log(
+      `[Transcribe] No reusable transcript for hash ${audioFile.contentHash.slice(0, 12)}, falling back to full transcription`,
+    );
+  }
+
+  // ===== 正常流程：转码 + whisper 转录 =====
 
   // 检查音频格式，决定是否需要转换
   let audioPath = audioFile.filePath;
   const sourcePath = audioFile.originalPath || audioFile.filePath;
-  
+
   try {
     const audioInfo = await getAudioInfo(sourcePath);
     console.log(`[Transcribe] Audio format: ${audioInfo.format}, duration: ${audioInfo.duration}s`);
@@ -191,7 +261,7 @@ async function processTranscribe(taskId: string, audioId: string) {
     data: { progress: 98 },
   });
 
-  const transcript = await prisma.transcript.create({
+  await prisma.transcript.create({
     data: {
       audioFileId: audioId,
       language: transcriptResult.language,
