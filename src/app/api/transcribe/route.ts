@@ -38,10 +38,16 @@ export async function POST(request: NextRequest) {
     console.log(`[Transcribe] Created task ${task.id}, audioId: ${audioId}`);
     processTranscribe(task.id, audioId).catch((err) => {
       console.error(`[Transcribe] Task ${task.id} failed:`, err.message);
+      // task 标 failed
       prisma.task.update({
         where: { id: task.id },
         data: { status: "failed", error: err.message },
-      });
+      }).catch(() => {});
+      // audioFile 也要标 failed，否则状态会卡在 transcribing 导致前端看不到
+      prisma.audioFile.update({
+        where: { id: audioId },
+        data: { status: "failed" },
+      }).catch(() => {});
     });
 
     return NextResponse.json({ taskId: task.id });
@@ -148,7 +154,7 @@ async function processTranscribe(taskId: string, audioId: string) {
   // 调用 Whisper 转录
   await prisma.task.update({
     where: { id: taskId },
-    data: { progress: 30 },
+    data: { progress: 10 },
   });
 
   console.log(`[Transcribe] Calling Whisper API...`);
@@ -156,24 +162,33 @@ async function processTranscribe(taskId: string, audioId: string) {
   // 确保 Whisper 已初始化
   await ensureWhisperInitialized();
 
+  // 进度映射：转录 10% → 95%（留 5% 给后处理保存 transcript）。
+  // whisper 自己的进度 0–100% 会被映射到这个区间。
   const transcriptResult = await transcribe(audioPath, {
     language: 'zh',
     onProgress: async (progress) => {
       console.log(`[Transcribe] Whisper progress: ${progress}%`);
-      const taskProgress = 30 + Math.floor(progress * 0.3);
+      // 10 + progress * 0.85 → 转录时进度从 10% 爬到 95%
+      const taskProgress = Math.min(95, 10 + Math.floor(progress * 0.85));
       console.log(`[Transcribe] Updating task progress to ${taskProgress}%`);
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { progress: taskProgress },
-      });
+      try {
+        await prisma.task.update({
+          where: { id: taskId },
+          data: { progress: taskProgress },
+        });
+      } catch (e) {
+        // DB 写失败不能让转录崩掉，只打印
+        console.error(`[Transcribe] progress update failed:`, e);
+      }
     },
   });
 
   console.log(`[Transcribe] Whisper completed, text length: ${transcriptResult.fullText.length}`);
 
+  // 转录完成后保存 transcript，并把 task 推到 waiting_for_prompt
   await prisma.task.update({
     where: { id: taskId },
-    data: { progress: 60 },
+    data: { progress: 98 },
   });
 
   const transcript = await prisma.transcript.create({
@@ -200,7 +215,7 @@ async function processTranscribe(taskId: string, audioId: string) {
   // 后续文章生成由 POST /api/generate 完成。
   await prisma.task.update({
     where: { id: taskId },
-    data: { progress: 70, status: "waiting_for_prompt" },
+    data: { progress: 100, status: "waiting_for_prompt" },
   });
   console.log(`[Transcribe] Task ${taskId} paused, waiting for prompt confirmation`);
 }

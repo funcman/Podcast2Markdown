@@ -190,7 +190,11 @@ GET /api/task/[taskId]（每 2s 轮询）
 ### src/lib/whisper.ts
 - 通过 subprocess spawn 调用 whisper.cpp（非原生 addon）
 - 导出: `init()`、`transcribe()`、`isCudaAvailable()`、`isReady()`
-- 启动 whisper.cpp 二进制，参数: `-m model -f audio.wav -l zh -oj -of output`
+- 启动 whisper.cpp 二进制，参数: `-m model -f audio.wav -l zh -oj -of output --no-beam-search`
+- **重要**：`--no-beam-search` 默认开启 —— large-v3 zh 配 greedy 准确率损失小，但能避免长音频在后 20% 卡死（beam search + best-of 5 是单次推理 6–8 倍耗时）。
+- **超时策略**：动态超时 = `max(60 分钟, 音频时长 × 1.5 分钟 + 30 分钟)`，用 `getAudioInfo` 读时长后算。**不要**改回固定 30 分钟——2 小时中文播客会跑不完。
+- **Windows 杀进程**：通过 `taskkill /F /T /PID` 强制杀子树，避免 `child.kill('SIGTERM')` 在 Windows 失效导致 main.exe 变成孤儿进程占用 GPU。
+- **心跳**：30 秒内无新进度回调会主动触发一次 `onProgress`，防止前端轮询看起来卡在 80%。
 - 解析 whisper.cpp 的 JSON 输出（字段名: `transcription`，不是 `segments`）
 - 使用环境变量: `WHISPER_MODEL_PATH`、`WHISPER_USE_CUDA`
 - JSON 输出结构:
@@ -352,6 +356,11 @@ powershell ./scripts/build-whisper.ps1  # 直接运行脚本，支持参数
 8. **Whisper JSON 格式**: 代码期望 `result.transcription` 数组，包含 `offsets.from/to`（毫秒）和 `text` 字段，不是 `result.segments`
 
 ## 故障排查
+
+### Whisper 在 80% "卡住"
+- **正常现象**。whisper.cpp 的 `progress` 输出是编码主循环的进度，beam search 阶段不会打印。80% → 100% 是 beam search 回放，对 large-v3 + 长音频可能耗时 30 分钟以上。
+- 当前实现：动态超时 + 30s 心跳 + Windows `taskkill /F /T` 强制杀子树 + 默认 `--no-beam-search`，整套都能在前端日志里看到。
+- 如果你想强行开 beam search 提升质量，要相应把超时上限调大。
 
 ### Whisper 返回 0 个 segments
 - 检查 JSON 字段名：应为 `transcription`，不是 `segments`
