@@ -216,9 +216,12 @@ export async function transcribe(
       '-oj',
       '-of', join(audioDir, audioName),
       '-pp',
-      // 关键：关掉 beam search。large-v3 zh 配 greedy 准确率损失小，
-      // 但能避免长音频在后 20% 卡死（beam search + best-of 5 是单次推理的 6–8 倍耗时）。
-      '--no-beam-search',
+      // 关键：用 greedy 模式（beam-size=1, best-of=1）。
+      // large-v3 zh 配 greedy 准确率损失小，但能避免长音频在后 20% 卡死
+      // （beam search + best-of 5 是单次推理 6–8 倍耗时）。
+      // 老版本 whisper.cpp 没有 --no-beam-search 这个 flag，所以显式传 -bs/-bo。
+      '-bs', '1',
+      '-bo', '1',
     ];
 
     if (!WHISPER_USE_CUDA) {
