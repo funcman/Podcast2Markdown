@@ -46,20 +46,31 @@ let currentModelPath: string = '';
 
 /**
  * Get whisper.cpp binary path
+ *
+ * 历史：
+ *   - v1.7.x 及之前：二进制叫 main.exe / main
+ *   - v1.8.0+：重命名为 whisper-cli.exe / whisper-cli，原 main.exe 变成
+ *     打 deprecation warning 的 stub wrapper。这里优先找新名字，找不到再回退。
  */
 function getWhisperBinary(): string {
   const isWindows = platform() === 'win32';
-  const binaryName = isWindows ? 'main.exe' : 'main';
+  // 优先尝试 v1.8.x 的二进制名
+  const candidates = isWindows
+    ? ['whisper-cli.exe', 'main.exe']
+    : ['whisper-cli', 'main'];
 
-  const possiblePaths = [
-    resolve(process.cwd(), 'whisper.cpp/build/bin', binaryName),
-    resolve(process.cwd(), 'whisper.cpp/build', binaryName),
-    resolve(process.cwd(), 'whisper.cpp', binaryName),
+  const searchDirs = [
+    resolve(process.cwd(), 'whisper.cpp/build/bin'),
+    resolve(process.cwd(), 'whisper.cpp/build'),
+    resolve(process.cwd(), 'whisper.cpp'),
   ];
 
-  for (const p of possiblePaths) {
-    if (existsSync(p)) {
-      return p;
+  for (const dir of searchDirs) {
+    for (const name of candidates) {
+      const p = join(dir, name);
+      if (existsSync(p)) {
+        return p;
+      }
     }
   }
 

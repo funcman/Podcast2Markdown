@@ -146,10 +146,10 @@ if (Test-Path $WhisperDir) {
 $env:CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING = "1"
 Write-Host "  CCCL preprocessor warning suppressed via environment variable" -ForegroundColor Gray
 if ($needClone) {
-    git clone --depth 1 --branch v1.7.1 https://github.com/ggerganov/whisper.cpp.git $WhisperDir
+    git clone --depth 1 --branch v1.8.3 https://github.com/ggerganov/whisper.cpp.git $WhisperDir
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Git clone failed, trying again..." -ForegroundColor Yellow
-        git clone --branch v1.7.1 https://github.com/ggerganov/whisper.cpp.git $WhisperDir
+        git clone --branch v1.8.3 https://github.com/ggerganov/whisper.cpp.git $WhisperDir
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Git clone failed permanently" -ForegroundColor Red
             exit 1

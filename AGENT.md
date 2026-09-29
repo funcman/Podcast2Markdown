@@ -190,8 +190,9 @@ GET /api/task/[taskId]（每 2s 轮询）
 ### src/lib/whisper.ts
 - 通过 subprocess spawn 调用 whisper.cpp（非原生 addon）
 - 导出: `init()`、`transcribe()`、`isCudaAvailable()`、`isReady()`
-- 启动 whisper.cpp 二进制，参数: `-m model -f audio.wav -l zh -oj -of output --no-beam-search`
-- **重要**：`--no-beam-search` 默认开启 —— large-v3 zh 配 greedy 准确率损失小，但能避免长音频在后 20% 卡死（beam search + best-of 5 是单次推理 6–8 倍耗时）。
+- 启动 whisper.cpp 二进制，参数: `-m model -f audio.wav -l zh -oj -of output -bs 1 -bo 1`
+- **重要**：` -bs 1 -bo 1` 默认开启 greedy —— large-v3 zh 配 greedy 准确率损失小，但能避免长音频在后 20% 卡死（beam search + best-of 5 是单次推理 6–8 倍耗时）。早期版本曾用 `--no-beam-search`（v1.8+ 才有的 flag），老版本用 `-bs/-bo` 兼容。
+- **whisper.cpp 版本**：v1.8.3。v1.8.0 把二进制 `main.exe` 重命名为 `whisper-cli.exe`，原 `main.exe` 变成 deprecation stub。`getWhisperBinary()` 优先找 `whisper-cli.exe`，回退到 `main.exe`。
 - **超时策略**：动态超时 = `max(60 分钟, 音频时长 × 1.5 分钟 + 30 分钟)`，用 `getAudioInfo` 读时长后算。**不要**改回固定 30 分钟——2 小时中文播客会跑不完。
 - **Windows 杀进程**：通过 `taskkill /F /T /PID` 强制杀子树，避免 `child.kill('SIGTERM')` 在 Windows 失效导致 main.exe 变成孤儿进程占用 GPU。
 - **心跳**：30 秒内无新进度回调会主动触发一次 `onProgress`，防止前端轮询看起来卡在 80%。
@@ -367,8 +368,12 @@ powershell ./scripts/build-whisper.ps1  # 直接运行脚本，支持参数
 
 ### Whisper 在 80% "卡住"
 - **正常现象**。whisper.cpp 的 `progress` 输出是编码主循环的进度，beam search 阶段不会打印。80% → 100% 是 beam search 回放，对 large-v3 + 长音频可能耗时 30 分钟以上。
-- 当前实现：动态超时 + 30s 心跳 + Windows `taskkill /F /T` 强制杀子树 + 默认 `--no-beam-search`，整套都能在前端日志里看到。
+- 当前实现：动态超时 + 30s 心跳 + Windows `taskkill /F /T` 强制杀子树 + 默认 `-bs 1 -bo 1`（greedy），整套都能在前端日志里看到。
 - 如果你想强行开 beam search 提升质量，要相应把超时上限调大。
+
+### Whisper 启动崩溃（exit code 3221226505 / 0xC0000005）
+- 此前 v1.7.1 在 `whisper_init_state` 之后的 compute buffer 分配阶段会偶发崩溃。**已通过升级到 whisper.cpp v1.8.3 修复**（commit 5d1baa6 之后的工作）。
+- 如果升级后仍出现：先重启电脑（WDDM 显存碎片），再检查 NVIDIA 驱动是否为最新版。
 
 ### Whisper 返回 0 个 segments
 - 检查 JSON 字段名：应为 `transcription`，不是 `segments`

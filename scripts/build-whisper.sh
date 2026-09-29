@@ -148,8 +148,8 @@ fi
 export CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING=1
 
 if [ "$need_clone" -eq 1 ]; then
-    git clone --depth 1 --branch v1.7.1 https://github.com/ggml-org/whisper.cpp.git "$WHISPER_DIR" \
-        || git clone --branch v1.7.1 https://github.com/ggml-org/whisper.cpp.git "$WHISPER_DIR"
+    git clone --depth 1 --branch v1.8.3 https://github.com/ggml-org/whisper.cpp.git "$WHISPER_DIR" \
+        || git clone --branch v1.8.3 https://github.com/ggml-org/whisper.cpp.git "$WHISPER_DIR"
 fi
 
 # ---------------------------------------------------------------------------
