@@ -11,6 +11,7 @@ import path from "path";
 import { writeFile, readFile, mkdir, rm, unlink } from "fs/promises";
 import { existsSync } from "fs";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
+import { detectLanguage } from "@/lib/detect-language";
 
 export const runtime = "nodejs";
 
@@ -413,6 +414,20 @@ async function processTranscribe(
       }
     }, 30_000);
 
+    // 每 chunk 自动检测语言：用 detect-language 工具，30 秒采样。
+    // 缓存：同一个 startMs 不重复检测（同一 audio file 多 chunk 共享起始窗口）。
+    const detectedCache = new Map<number, string | null>();
+    const languageDetector = async ({ startMs }: { startMs: number }) => {
+      if (detectedCache.has(startMs)) {
+        return detectedCache.get(startMs) ?? null;
+      }
+      console.log(`[Transcribe] detecting language at startMs=${startMs}...`);
+      const detected = await detectLanguage(audioPath, { startMs, durationMs: 30_000 });
+      detectedCache.set(startMs, detected);
+      console.log(`[Transcribe] detected language at startMs=${startMs}: ${detected ?? "(failed, will fallback)"}`);
+      return detected;
+    };
+
     const result = await transcribeWithCheckpoint(audioPath, totalChunks, {
       language,
       chunkDurationMs: CHUNK_DURATION_MS,
@@ -420,6 +435,8 @@ async function processTranscribe(
       alreadyCompletedChunks: completedChunksList,
       loadChunkSegments,
       onChunkSegmentsPersist: persistChunkSegments,
+      // 只在 'auto-detect-per-chunk' 模式下触发 detector
+      languageDetector: language === "auto-detect-per-chunk" ? languageDetector : undefined,
       onChunkStart: ({ index, total, startMs, durationMs }) => {
         console.log(
           `[Transcribe] chunk ${index + 1}/${total} starting (startMs=${startMs}, durationMs=${durationMs})`,

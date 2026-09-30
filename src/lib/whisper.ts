@@ -444,6 +444,8 @@ function resolveChunkLanguage(language: string, startMs: number): string {
   if (language === "mixed") {
     return startMs < MIXED_SPLIT_MS ? "zh" : "en";
   }
+  // 'auto-detect-per-chunk' 是占位符：实际值在 transcribeWithCheckpoint 循环里
+  // 通过 languageDetector 回调动态算
   return language;
 }
 
@@ -477,6 +479,20 @@ export interface CheckpointOptions {
    * 如果报错应该 swallow——这只是缓存，不应该让转录整体失败。
    */
   onChunkSegmentsPersist?: (chunkIndex: number, segments: TranscriptSegment[]) => Promise<void>;
+  /**
+   * 每 chunk 自动检测语言。
+   * 调用方传一个函数，transcribeWithCheckpoint 在转录每个 chunk 之前会调它，
+   * 拿到这个 chunk 真正应该用的语言（如 'zh' / 'en'）。
+   * 返回 null 表示"用默认 language"或"跳过检测"。
+   *
+   * 工作流：
+   *  - resolveChunkLanguage(language, startMs) 先按 mixed 策略算一个候选
+   *  - 如果传了 languageDetector 且候选是 'auto-detect'，则调用 detector 得到真语言
+   *  - 否则用候选
+   *
+   * 这解决了"-l auto 仅在开头检测一次然后锁死"的限制。
+   */
+  languageDetector?: (info: { startMs: number; durationMs: number }) => Promise<string | null>;
 }
 
 export interface ChunkCheckpoint {
@@ -653,6 +669,7 @@ export async function transcribeWithCheckpoint(
     onProgress,
     loadChunkSegments,
     onChunkSegmentsPersist,
+    languageDetector,
   } = options;
 
   // 总音频时长（毫秒）
@@ -695,6 +712,24 @@ export async function transcribeWithCheckpoint(
     //   → 重新跑（whisper.cpp 的 -ot/-d 是幂等的，结果一致）
     // 优先级 3：不在 alreadyCompletedChunks 里
     //   → 重新跑
+
+    // 决定这个 chunk 实际用的 language
+    // 流程：resolveChunkLanguage 算固定值（mixed/preferred），如果用户传了
+    // languageDetector 且 language === 'auto-detect-per-chunk'，调它动态检测
+    let chunkLang = resolveChunkLanguage(language, startMs);
+    if (chunkLang === "auto-detect-per-chunk" && languageDetector) {
+      const detected = await languageDetector({ startMs, durationMs: actualDurationMs });
+      if (detected) {
+        chunkLang = detected;
+        console.log(
+          `[Whisper] chunk ${i} language detected: ${detected}`,
+        );
+      } else {
+        // detector 失败回退到 'auto'（让 whisper 自己用整体检测一次）
+        chunkLang = "auto";
+      }
+    }
+
     let segs: TranscriptSegment[];
     if (alreadyCompletedChunks.includes(i) && loadChunkSegments) {
       const cached = await loadChunkSegments(i);
@@ -708,17 +743,14 @@ export async function transcribeWithCheckpoint(
           `[Whisper] chunk ${i}/${totalChunks} marked done but no cached segments, re-running`,
         );
         console.log(
-          `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
+          `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}, lang=${chunkLang}`,
         );
-        // 'mixed' 模式：按 startMs 选 zh / en
-        const chunkLang = resolveChunkLanguage(language, startMs);
         segs = await transcribeChunk(audioPath, startMs, actualDurationMs, chunkLang, currentModelPath);
       }
     } else {
       console.log(
-        `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
+        `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}, lang=${chunkLang}`,
       );
-      const chunkLang = resolveChunkLanguage(language, startMs);
       segs = await transcribeChunk(audioPath, startMs, actualDurationMs, chunkLang, currentModelPath);
     }
 

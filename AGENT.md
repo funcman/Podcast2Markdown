@@ -194,7 +194,10 @@ GET /api/task/[taskId]（每 2s 轮询）
   * `-l` 接收前端用户选择的语言（默认 `'auto'` 让 whisper.cpp 逐段自动检测）
   * 之前硬编码 `-l zh` 导致英文被强转、名字错译、幻觉循环
   * `whisper.cpp -l auto` **不可靠**：只检测一次然后锁死整个文件。中文播客+英文访谈会被锁成 zh
-  * **混合播客（中文导语+英文主体）**：用 `mixed`，按 chunk 边界（默认 5 分钟）切 zh/en——见 [src/lib/whisper.ts](src/lib/whisper.ts) 的 `resolveChunkLanguage()`
+  * **混合播客语言策略**：
+    * `auto-detect-per-chunk`（推荐）：每 chunk 自动检测 30 秒采样，按真实语言转码——`[src/lib/detect-language.ts](src/lib/detect-language.ts)` + `transcribeWithCheckpoint` 的 `languageDetector` 回调
+    * `mixed`（固定模式）：前 5 分钟 zh + 之后 en——`src/lib/whisper.ts` 的 `resolveChunkLanguage()`
+    * `zh` / `en`：纯中文/纯英文音频
 - **重要**：` -bs 1 -bo 1` 默认开启 greedy —— large-v3 zh 配 greedy 准确率损失小，但能避免长音频在后 20% 卡死（beam search + best-of 5 是单次推理 6–8 倍耗时）。早期版本曾用 `--no-beam-search`（v1.8+ 才有的 flag），老版本用 `-bs/-bo` 兼容。
 - **`-mc 0`** 强制每个 segment 独立，不跨段带 context —— **根治 token 循环**。whisper 大模型在低置信度+重复语音片段（如主播说"点赞、订阅、转发"）下，decoder 会把上一个 segment 文本作为 prompt 喂回去，强化重复模式，最终整个文件输出同一句话重复几百遍。`-mc 0` 从根上断循环。副作用：段间填充词（"那个""就是说"）不会从上一段带过来，但准确率影响可忽略。
 - **`-nf`** 禁用 temperature fallback —— 低置信度时 whisper 默认会用 0.2/0.4/0.8 多次重试，重试结果经常是任意乱码。`-nf` 让模型坚持 greedy 解码。
