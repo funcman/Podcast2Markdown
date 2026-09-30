@@ -334,13 +334,19 @@ export async function transcribe(
       if (code !== 0) {
         console.error(`[Whisper] Process exited with code ${code}`);
         console.error(`[Whisper] stderr tail: ${stderr.slice(-2048)}`);
-        reject(
-          new Error(
-            `Whisper transcription failed (exit code ${code}): ${
-              stderr.slice(-512) || 'Unknown error'
-            }`,
-          ),
-        );
+        // 0xC0000005 = 3221226505：CUDA access violation（驱动层或显存问题）
+        // 通常是 NVIDIA WDDM 驱动有僵尸 CUDA context，调用方可以重置驱动后重试
+        const oomRecoverable =
+          code === 3221226505 ||
+          /out of memory|ggml_backend_cuda_buffer_type_alloc_buffer/i.test(stderr);
+        const err = new Error(
+          `Whisper transcription failed (exit code ${code}): ${
+            stderr.slice(-512) || 'Unknown error'
+          }`,
+        ) as Error & { oomRecoverable?: boolean; exitCode?: number | null };
+        err.exitCode = code;
+        err.oomRecoverable = oomRecoverable;
+        reject(err);
         return;
       }
 

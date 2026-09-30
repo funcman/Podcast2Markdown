@@ -393,8 +393,16 @@ powershell ./scripts/build-whisper.ps1  # 直接运行脚本，支持参数
 - 如果你想强行开 beam search 提升质量，要相应把超时上限调大。
 
 ### Whisper 启动崩溃（exit code 3221226505 / 0xC0000005）
-- 此前 v1.7.1 在 `whisper_init_state` 之后的 compute buffer 分配阶段会偶发崩溃。**已通过升级到 whisper.cpp v1.8.3 修复**（commit 5d1baa6 之后的工作）。
-- 如果升级后仍出现：先重启电脑（WDDM 显存碎片），再检查 NVIDIA 驱动是否为最新版。
+- **症状**：stderr 走到 `whisper_init_state: compute buffer (decode) = 100.04 MB` 之后立刻 0xC0000005 退出
+- **机理**：NVIDIA WDDM 驱动有"僵尸 CUDA context"——之前的 main.exe 异常退出后驱动没回收显存，nvidia-smi 显示有内存被占但看不到任何进程。下次 cudaMalloc 失败 → 进程被 kill
+- **自动恢复**（`src/lib/gpu-memory.ts` + transcribe route）：
+  1. 捕获到 `oomRecoverable: true` 的错误（exit 3221226505 或 stderr 含 `out of memory`）
+  2. 调 `recoverGpuMemory()`：`taskkill /F /T /IM main.exe + whisper-cli.exe`（如果有）+ `Disable-PnpDevice` → `Enable-PnpDevice`（NVIDIA Display adapter）
+  3. 等 2 秒驱动初始化
+  4. 重试 1 次
+  5. 重试仍失败：错误消息前缀 `[已重置 NVIDIA 驱动]` 让前端识别
+- **手动恢复**：`recoverGpuMemory()` 可独立调用，闪屏 1-2 秒
+- **不要自动重置的场景**：用户开了 Premiere Pro 等其他 GPU 应用时会被一起杀掉。所以默认**只在出错时**才重置，不是每次转录开始都重置
 
 ### Whisper 输出严重 token 循环（同一句重复几百次）
 - **症状**：raw.txt 里同一句话（乱码或正常中文）重复 N 次，整个文件基本不可读

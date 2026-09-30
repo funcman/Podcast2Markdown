@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
   transcribe,
@@ -6,6 +6,7 @@ import {
   transcribeWithCheckpoint,
   computeTotalChunks,
 } from "@/lib/whisper";
+import { recoverGpuMemory } from "@/lib/gpu-memory";
 import path from "path";
 import { writeFile, readFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
@@ -258,22 +259,25 @@ async function processTranscribe(
   let totalChunks = 0;
   let completedChunksList: number[] = [];
 
-  if (!useCheckpoint) {
-    console.log(`[Transcribe] Short audio (${audioSeconds}s), using single-shot transcribe`);
-    const lastHeartbeatRef = { at: Date.now() };
-    transcriptResult = await transcribe(audioPath, {
-      language, // 用户在上传时指定，'auto' / 'zh' / 'en' 等
-      onProgress: async (progress) => {
-        lastHeartbeatRef.at = Date.now();
-        const taskProgress = Math.min(95, 10 + Math.floor(progress * 0.85));
-        try {
-          await prisma.task.update({ where: { id: taskId }, data: { progress: taskProgress } });
-        } catch (e) {
-          console.error(`[Transcribe] progress update failed:`, e);
-        }
-      },
-    });
-  } else {
+  // 把短/长音频两种转录路径都包到一个函数里，便于 GPU 错误重试
+  const runTranscriptionOnce = async () => {
+    if (!useCheckpoint) {
+      console.log(`[Transcribe] Short audio (${audioSeconds}s), using single-shot transcribe`);
+      const lastHeartbeatRef = { at: Date.now() };
+      return await transcribe(audioPath, {
+        language,
+        onProgress: async (progress) => {
+          lastHeartbeatRef.at = Date.now();
+          const taskProgress = Math.min(95, 10 + Math.floor(progress * 0.85));
+          try {
+            await prisma.task.update({ where: { id: taskId }, data: { progress: taskProgress } });
+          } catch (e) {
+            console.error(`[Transcribe] progress update failed:`, e);
+          }
+        },
+      });
+    }
+
     // === Chunked transcription with checkpoint ===
     console.log(`[Transcribe] Long audio (${audioSeconds}s), using chunked transcription`);
 
@@ -359,10 +363,7 @@ async function processTranscribe(
           );
           await prisma.task.update({
             where: { id: taskId },
-            data: {
-              progress: taskProgress,
-              // 同步 DB 计数（防止前端读不到 DB 计数）
-            },
+            data: { progress: taskProgress },
           });
           await prisma.audioFile.update({
             where: { id: audioId },
@@ -375,12 +376,12 @@ async function processTranscribe(
       }
     }, 30_000);
 
-    transcriptResult = await transcribeWithCheckpoint(audioPath, totalChunks, {
-      language, // 同上，用户指定
+    const result = await transcribeWithCheckpoint(audioPath, totalChunks, {
+      language,
       chunkDurationMs: CHUNK_DURATION_MS,
       chunkOverlapMs: CHUNK_OVERLAP_MS,
       alreadyCompletedChunks: completedChunksList,
-      loadChunkSegments, // 优先复用 segments_N.json，重启不丢内容
+      loadChunkSegments,
       onChunkSegmentsPersist: persistChunkSegments,
       onChunkStart: ({ index, total, startMs, durationMs }) => {
         console.log(
@@ -390,7 +391,6 @@ async function processTranscribe(
       onChunkDone: async ({ index, total, startMs, durationMs, segmentCount }) => {
         completedChunksList.push(index);
         completedChunksList.sort((a, b) => a - b);
-        // 立刻落盘 done.json
         try {
           await writeFile(
             doneFile,
@@ -428,6 +428,36 @@ async function processTranscribe(
     });
 
     clearInterval(heartbeat);
+    return result;
+  };
+
+  try {
+    transcriptResult = await runTranscriptionOnce();
+  } catch (err: unknown) {
+    const e = err as Error & { oomRecoverable?: boolean; gpuRecovered?: boolean };
+    if (!e.oomRecoverable) throw err;
+
+    // GPU 显存或驱动出问题：杀残留 + 重置 NVIDIA PnP 驱动 + 等驱动回来
+    console.warn(
+      `[Transcribe] Detected GPU/oom error, recovering: ${e.message.slice(0, 200)}`,
+    );
+    const recovery = await recoverGpuMemory();
+    console.log(
+      `[Transcribe] GPU recovery: killed=${recovery.killed}, reset=${recovery.reset}`,
+    );
+    // 给驱动初始化再留点 buffer
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // 重置 GPU 后重试 1 次
+    try {
+      transcriptResult = await runTranscriptionOnce();
+      console.log(`[Transcribe] Retry after GPU reset succeeded`);
+    } catch (retryErr) {
+      // 重试还失败，附"已重置"信息让前端展示
+      const e2 = retryErr as Error;
+      e2.message = `[已重置 NVIDIA 驱动] ${e2.message}`;
+      throw e2;
+    }
   }
 
   console.log(`[Transcribe] Whisper completed, text length: ${transcriptResult.fullText.length}`);
