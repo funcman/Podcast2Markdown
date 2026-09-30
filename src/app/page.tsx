@@ -294,6 +294,7 @@ export default function Home() {
               className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="auto-detect-per-chunk">每 chunk 自动检测（中英混杂最优，推荐）</option>
+              <option value="bilingual-merge">zh+en 双语合并 LLM（中英混杂最准，慢 2 倍+LLM）</option>
               <option value="mixed">中英混杂固定模式（前 5 分钟中文 + 之后英文）</option>
               <option value="zh">中文（仅）</option>
               <option value="en">English</option>
@@ -306,8 +307,8 @@ export default function Home() {
               <option value="ru">Русский</option>
             </select>
             <p className="text-gray-500 text-xs mt-2">
-              中英混杂音频推荐 "每 chunk 自动检测"（每 5 分钟单独检测语言）。
-              每个 chunk 多 ~30 秒采样，全长 17 个 chunk 多 ~9 分钟。
+              中英混杂音频推荐 "每 chunk 自动检测"或 "zh+en 双语合并 LLM"。
+              后者最准但慢（两遍转录 + LLM 调用）。纯中文/英文选对应单语言。
             </p>
           </div>
         </div>

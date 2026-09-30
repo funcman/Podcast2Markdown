@@ -195,7 +195,8 @@ GET /api/task/[taskId]（每 2s 轮询）
   * 之前硬编码 `-l zh` 导致英文被强转、名字错译、幻觉循环
   * `whisper.cpp -l auto` **不可靠**：只检测一次然后锁死整个文件。中文播客+英文访谈会被锁成 zh
   * **混合播客语言策略**：
-    * `auto-detect-per-chunk`（推荐）：每个 chunk 采 3 个采样点（10%/50%/90% 位置各 15 秒），投票决定语言——见 [src/lib/detect-language.ts](src/lib/detect-language.ts)。**单采样点易被主持人切换语言瞬间误导**（比如 70 分钟"英文主体+偶发中文提问"音频，单点总是 zh → 全 zh 跑）；多采样+投票才能躲过陷阱
+    * `auto-detect-per-chunk`：每个 chunk 采 3 个采样点（10%/50%/90% 位置各 15 秒），投票决定语言——见 [src/lib/detect-language.ts](src/lib/detect-language.ts)。**单采样点易被主持人切换语言瞬间误导**（比如 70 分钟"英文主体+偶发中文提问"音频，单点总是 zh → 全 zh 跑）；多采样+投票才能躲过陷阱
+    * `bilingual-merge`（最准但慢）：串行跑 zh + en 两遍（共用 chunked 基础设施但产物分开存到 `segments/zh/` 和 `segments/en/`），调 ark LLM 合并两份产物，输出 `raw.txt`——见 [src/lib/merge-transcripts.ts](src/lib/merge-transcripts.ts)。中英混杂音频**真正不丢信息**的方案。总耗时 ≈ 2× 转录 + 1× LLM 调用
     * `mixed`（固定模式）：前 5 分钟 zh + 之后 en——`src/lib/whisper.ts` 的 `resolveChunkLanguage()`
     * `zh` / `en`：纯中文/纯英文音频
 - **重要**：` -bs 1 -bo 1` 默认开启 greedy —— large-v3 zh 配 greedy 准确率损失小，但能避免长音频在后 20% 卡死（beam search + best-of 5 是单次推理 6–8 倍耗时）。早期版本曾用 `--no-beam-search`（v1.8+ 才有的 flag），老版本用 `-bs/-bo` 兼容。

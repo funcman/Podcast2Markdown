@@ -12,6 +12,7 @@ import { writeFile, readFile, mkdir, rm, unlink } from "fs/promises";
 import { existsSync } from "fs";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
 import { detectLanguage } from "@/lib/detect-language";
+import { mergeBilingualTranscripts } from "@/lib/merge-transcripts";
 
 export const runtime = "nodejs";
 
@@ -278,7 +279,7 @@ async function processTranscribe(
   let actuallyCompletedChunks = 0; // 只在 onChunkDone 真正完成时 +1，避免 force 时被 done.json 误导
 
   // 把短/长音频两种转录路径都包到一个函数里，便于 GPU 错误重试
-  const runTranscriptionOnce = async () => {
+  const runTranscriptionOnce = async (runLanguage: string, languageKey: string) => {
     // 重置：本轮（GPU 重试也算新的一轮）从 0 开始计
     actuallyCompletedChunks = 0;
 
@@ -288,14 +289,22 @@ async function processTranscribe(
       const doneFile = path.join(chunksDir, "done.json");
       const segmentsDir = path.join(chunksDir, "segments");
       try {
-        if (existsSync(doneFile)) {
-          await unlink(doneFile);
-          console.log(`[Transcribe] forceTranscribe=true, deleted ${doneFile}`);
-        }
-        if (existsSync(segmentsDir)) {
-          await rm(segmentsDir, { recursive: true, force: true });
-          await mkdir(segmentsDir, { recursive: true });
-          console.log(`[Transcribe] forceTranscribe=true, reset segments/`);
+        // bilingual-merge 模式下只清当前 languageKey 的产物
+        if (languageKey === "zh" || languageKey === "en") {
+          const subDir = path.join(segmentsDir, languageKey);
+          if (existsSync(subDir)) {
+            await rm(subDir, { recursive: true, force: true });
+            console.log(`[Transcribe] forceTranscribe=true, reset segments/${languageKey}/`);
+          }
+        } else {
+          if (existsSync(doneFile)) {
+            await unlink(doneFile);
+          }
+          if (existsSync(segmentsDir)) {
+            await rm(segmentsDir, { recursive: true, force: true });
+            await mkdir(segmentsDir, { recursive: true });
+            console.log(`[Transcribe] forceTranscribe=true, reset segments/`);
+          }
         }
         completedChunksList = [];
       } catch (e) {
@@ -337,8 +346,12 @@ async function processTranscribe(
      * 从 segments/<i>.json 读已持久化的 chunk segments。
      * 返回 null 表示"没缓存"，whisper.ts 会重跑这个 chunk。
      */
-    const loadChunkSegments = async (chunkIndex: number) => {
-      const file = path.join(segmentsDir, `${chunkIndex}.json`);
+    const loadChunkSegments = async (chunkIndex: number, languageKey: string) => {
+      const targetDir =
+        languageKey === "zh" || languageKey === "en"
+          ? path.join(segmentsDir, languageKey)
+          : segmentsDir;
+      const file = path.join(targetDir, `${chunkIndex}.json`);
       if (!existsSync(file)) return null;
       try {
         const content = await readFile(file, "utf-8");
@@ -358,8 +371,18 @@ async function processTranscribe(
     const persistChunkSegments = async (
       chunkIndex: number,
       segs: Array<{ start: number; end: number; text: string }>,
+      languageKey: string,
     ) => {
-      const file = path.join(segmentsDir, `${chunkIndex}.json`);
+      // bilingual-merge 模式下两遍产物分开存：segments/zh/0.json、segments/en/0.json
+      // 单语言模式仍存 segments/0.json（向后兼容）
+      const targetDir =
+        languageKey === "zh" || languageKey === "en"
+          ? path.join(segmentsDir, languageKey)
+          : segmentsDir;
+      if (!existsSync(targetDir)) {
+        await mkdir(targetDir, { recursive: true });
+      }
+      const file = path.join(targetDir, `${chunkIndex}.json`);
       await writeFile(file, JSON.stringify(segs), "utf-8");
     };
 
@@ -443,14 +466,15 @@ async function processTranscribe(
     };
 
     const result = await transcribeWithCheckpoint(audioPath, totalChunks, {
-      language,
+      language: runLanguage, // 本遍的固定 language（zh / en / mixed / original）
+      languageKey, // cache 文件名隔离 key
       chunkDurationMs: CHUNK_DURATION_MS,
       chunkOverlapMs: CHUNK_OVERLAP_MS,
       alreadyCompletedChunks: completedChunksList,
       loadChunkSegments,
       onChunkSegmentsPersist: persistChunkSegments,
       // 只在 'auto-detect-per-chunk' 模式下触发 detector
-      languageDetector: language === "auto-detect-per-chunk" ? languageDetector : undefined,
+      languageDetector: runLanguage === "auto-detect-per-chunk" ? languageDetector : undefined,
       onChunkStart: ({ index, total, startMs, durationMs }) => {
         console.log(
           `[Transcribe] chunk ${index + 1}/${total} starting (startMs=${startMs}, durationMs=${durationMs})`,
@@ -504,8 +528,81 @@ async function processTranscribe(
     return result;
   };
 
+  // ===== bilingual-merge 模式：串行跑 zh + en 两遍，LLM 合并 =====
+  if (language === "bilingual-merge") {
+    console.log(`[Transcribe] Bilingual merge mode: running zh then en`);
+
+    // force 时清掉之前的双语产物（zh + en 子目录 + done.json + 合并结果）
+    if (forceTranscribe) {
+      const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
+      try {
+        for (const sub of ["zh", "en"]) {
+          const subDir = path.join(chunksDir, "segments", sub);
+          if (existsSync(subDir)) {
+            await rm(subDir, { recursive: true, force: true });
+          }
+        }
+        const doneFile = path.join(chunksDir, "done.json");
+        if (existsSync(doneFile)) await unlink(doneFile);
+      } catch (e) {
+        console.warn(`[Transcribe] failed to clean bilingual state:`, e);
+      }
+    }
+
+    // 第 1 遍：zh
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { progress: 15 },
+    });
+    console.log(`[Transcribe] === bilingual pass 1/3: zh ===`);
+    const zhResult = await runTranscriptionOnce("zh", "zh");
+
+    // 落盘 zh 版 raw.txt（保留中间产物，方便调试或重跑合并）
+    const uploadDir = path.join(process.cwd(), "uploads", audioId);
+    const rawZhPath = path.join(uploadDir, "raw_zh.txt");
+    await writeFile(rawZhPath, zhResult.fullText, "utf-8");
+    console.log(`[Transcribe] zh pass done, saved to ${rawZhPath} (${zhResult.fullText.length} chars)`);
+
+    // 第 2 遍：en
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { progress: 50 },
+    });
+    console.log(`[Transcribe] === bilingual pass 2/3: en ===`);
+    const enResult = await runTranscriptionOnce("en", "en");
+
+    const rawEnPath = path.join(uploadDir, "raw_en.txt");
+    await writeFile(rawEnPath, enResult.fullText, "utf-8");
+    console.log(`[Transcribe] en pass done, saved to ${rawEnPath} (${enResult.fullText.length} chars)`);
+
+    // 第 3 步：LLM 合并
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { progress: 90 },
+    });
+    console.log(`[Transcribe] === bilingual pass 3/3: LLM merge ===`);
+    const mergedText = await mergeBilingualTranscripts({
+      audioPath: uploadDir,
+      rawZh: zhResult.fullText,
+      rawEn: enResult.fullText,
+      apiKey: process.env.ARK_PLAN_API_KEY || process.env.ARK_API_KEY,
+      baseURL: process.env.ARK_API_BASE || "https://ark.cn-beijing.volces.com/api/coding/v3",
+      model: process.env.ARK_MODEL || "deepseek-v4-1-flash-260910",
+    });
+    console.log(
+      `[Transcribe] merge done, ${mergedText.length} chars`,
+    );
+
+    // 写 raw.txt + Transcript（直接进保存分支）
+    transcriptResult = {
+      language: "zh+en",
+      fullText: mergedText,
+      segments: zhResult.segments, // 用 zh 的 segments（时间戳对齐），不强求 merge
+    };
+    // 跳到下面的保存分支
+  } else {
   try {
-    transcriptResult = await runTranscriptionOnce();
+    transcriptResult = await runTranscriptionOnce(language, language);
   } catch (err: unknown) {
     const e = err as Error & { oomRecoverable?: boolean; gpuRecovered?: boolean };
     if (!e.oomRecoverable) throw err;
@@ -523,7 +620,7 @@ async function processTranscribe(
 
     // 重置 GPU 后重试 1 次
     try {
-      transcriptResult = await runTranscriptionOnce();
+      transcriptResult = await runTranscriptionOnce(language, language);
       console.log(`[Transcribe] Retry after GPU reset succeeded`);
     } catch (retryErr) {
       // 重试还失败，附"已重置"信息让前端展示
@@ -532,6 +629,7 @@ async function processTranscribe(
       throw e2;
     }
   }
+  }  // 关闭 else (language !== 'bilingual-merge')
 
   console.log(`[Transcribe] Whisper completed, text length: ${transcriptResult.fullText.length}`);
 

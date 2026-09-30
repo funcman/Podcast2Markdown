@@ -451,6 +451,11 @@ function resolveChunkLanguage(language: string, startMs: number): string {
 
 export interface CheckpointOptions {
   language?: string;
+  /**
+   * 用于 segments cache 文件名（uploads/<id>/chunks/segments/<key>/<i>.json）。
+   * 默认为 language。bilingual-merge 模式传 'zh' / 'en' 让两遍产物分开存。
+   */
+  languageKey?: string;
   chunkDurationMs?: number;
   chunkOverlapMs?: number;
   onChunkStart?: (info: { index: number; total: number; startMs: number; durationMs: number }) => void;
@@ -472,13 +477,13 @@ export interface CheckpointOptions {
    *   2. 重启时 transcribeHere 调 loadChunkSegments 把缓存读回
    *   3. whisper.ts 跳过对应 chunk 的实际重跑
    */
-  loadChunkSegments?: (chunkIndex: number) => Promise<TranscriptSegment[] | null>;
+  loadChunkSegments?: (chunkIndex: number, languageKey: string) => Promise<TranscriptSegment[] | null>;
   /**
    * 每次 chunk 完成（无论是不是新跑的还是从缓存读的）触发一次，
    * 调用方负责把 segments 写到自己的存储里（典型：uploads/<id>/chunks/segments/<i>.json）。
    * 如果报错应该 swallow——这只是缓存，不应该让转录整体失败。
    */
-  onChunkSegmentsPersist?: (chunkIndex: number, segments: TranscriptSegment[]) => Promise<void>;
+  onChunkSegmentsPersist?: (chunkIndex: number, segments: TranscriptSegment[], languageKey: string) => Promise<void>;
   /**
    * 每 chunk 自动检测语言。
    * 调用方传一个函数，transcribeWithCheckpoint 在转录每个 chunk 之前会调它，
@@ -660,6 +665,7 @@ export async function transcribeWithCheckpoint(
   }
   const {
     language = 'zh',
+    languageKey,
     chunkDurationMs = CHUNK_DURATION_MS_DEFAULT,
     chunkOverlapMs = CHUNK_OVERLAP_MS_DEFAULT,
     onChunkStart,
@@ -671,6 +677,8 @@ export async function transcribeWithCheckpoint(
     onChunkSegmentsPersist,
     languageDetector,
   } = options;
+  // 默认用 language 作 cache key（向后兼容老调用方）
+  const effectiveLanguageKey = languageKey ?? language;
 
   // 总音频时长（毫秒）
   const audioSeconds = (await getAudioSeconds(audioPath)) || 0;
@@ -732,7 +740,7 @@ export async function transcribeWithCheckpoint(
 
     let segs: TranscriptSegment[];
     if (alreadyCompletedChunks.includes(i) && loadChunkSegments) {
-      const cached = await loadChunkSegments(i);
+      const cached = await loadChunkSegments(i, effectiveLanguageKey);
       if (cached && cached.length > 0) {
         console.log(
           `[Whisper] chunk ${i}/${totalChunks} loaded from cache (${cached.length} segments)`,
@@ -758,7 +766,7 @@ export async function transcribeWithCheckpoint(
     // 让调用方把 segments 持久化（fire-and-forget，不阻塞）
     if (onChunkSegmentsPersist) {
       try {
-        await onChunkSegmentsPersist(i, segs);
+        await onChunkSegmentsPersist(i, segs, effectiveLanguageKey);
       } catch (e) {
         console.error(`[Whisper] failed to persist segments for chunk ${i}:`, e);
       }
