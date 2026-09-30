@@ -30,6 +30,32 @@ interface PollData {
   chunkOverlapMs?: number | null;
 }
 
+interface IncompleteTaskInfo {
+  audioId: string;
+  taskId: string;
+  status: string;
+  progress: number;
+  completedChunks: number | null;
+  totalChunks: number | null;
+}
+
+interface CompletedTranscriptRef {
+  audioId: string;
+  taskId: string;
+}
+
+interface UploadResponse {
+  audioId: string;
+  fileName: string;
+  duration: number | null;
+  status: string;
+  contentHash?: string;
+  hasIncompleteTask: boolean;
+  incompleteTask: IncompleteTaskInfo | null;
+  hasCompletedTranscript: boolean;
+  completedTranscriptRef: CompletedTranscriptRef | null;
+}
+
 export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [audioId, setAudioId] = useState<string | null>(null);
@@ -44,6 +70,11 @@ export default function Home() {
   const [transcriptLength, setTranscriptLength] = useState<number>(0);
   const [transcriptPreview, setTranscriptPreview] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
+  // 上传后但未开始处理：等待用户决定"复用/重跑"
+  const [pendingDecision, setPendingDecision] = useState<{
+    audioId: string;
+    incompleteTask: IncompleteTaskInfo;
+  } | null>(null);
 
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -63,10 +94,10 @@ export default function Home() {
 
       clearTimeout(timeoutId);
 
-      const data = await res.json();
+      const data: UploadResponse = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || `Upload failed: ${res.status}`);
+        throw new Error((data as unknown as { error?: string }).error || `Upload failed: ${res.status}`);
       }
 
       if (!data.audioId) {
@@ -74,7 +105,29 @@ export default function Home() {
       }
 
       setAudioId(data.audioId);
-      startTranscribe(data.audioId);
+
+      // 决策分支
+      if (data.hasIncompleteTask && data.incompleteTask) {
+        // 找到未完成任务，弹按钮让用户决定
+        console.log(
+          `[Frontend] Found incomplete task ${data.incompleteTask.taskId} at progress ${data.incompleteTask.progress}%`,
+        );
+        setPendingDecision({
+          audioId: data.audioId,
+          incompleteTask: data.incompleteTask,
+        });
+        setStatus("发现未完成的任务");
+      } else if (data.hasCompletedTranscript && data.completedTranscriptRef) {
+        // 已有完整转录，直接走复用分支
+        console.log(
+          `[Frontend] Found completed transcript for task ${data.completedTranscriptRef.taskId}`,
+        );
+        setTaskId(data.completedTranscriptRef.taskId);
+        pollStatus(data.completedTranscriptRef.taskId);
+      } else {
+        // 全新音频，正常开始
+        startTranscribe(data.audioId);
+      }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         setStatus("上传超时: 文件太大或网络太慢");
@@ -86,16 +139,36 @@ export default function Home() {
     }
   };
 
-  const startTranscribe = async (id: string) => {
+  const startTranscribe = async (id: string, force = false) => {
     setStatus("转录中...");
     const res = await fetch("/api/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audioId: id }),
+      body: JSON.stringify({ audioId: id, forceTranscribe: force }),
     });
     const data = await res.json();
     setTaskId(data.taskId);
     pollStatus(data.taskId);
+  };
+
+  const handleResume = () => {
+    if (!pendingDecision) return;
+    const { incompleteTask } = pendingDecision;
+    console.log(`[Frontend] Resuming task ${incompleteTask.taskId} from progress ${incompleteTask.progress}%`);
+    setPendingDecision(null);
+    setTaskId(incompleteTask.taskId);
+    setStatus("恢复转录...");
+    setProgress(incompleteTask.progress);
+    // 直接轮询已有 task，不需要重新调用 transcribe API
+    pollStatus(incompleteTask.taskId);
+  };
+
+  const handleRestart = () => {
+    if (!pendingDecision) return;
+    const { audioId } = pendingDecision;
+    console.log(`[Frontend] Restarting transcription for ${audioId} (force)`);
+    setPendingDecision(null);
+    startTranscribe(audioId, true);
   };
 
   const handlePromptConfirm = async () => {
@@ -233,7 +306,7 @@ export default function Home() {
                   安装指南: https://ffmpeg.org/download.html
                 </a>
               </div>
-            ) : progress > 0 && !isWaitingForPrompt ? (
+            ) : pendingDecision ? null : progress > 0 && !isWaitingForPrompt ? (
               <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all"
@@ -242,6 +315,41 @@ export default function Home() {
               </div>
             ) : null}
           </div>
+
+          {/* 决策弹窗：发现未完成任务时 */}
+          {pendingDecision && (
+            <div className="bg-white border-2 border-amber-300 rounded-lg p-4 space-y-3">
+              <h2 className="text-lg font-bold mb-1">发现未完成的任务</h2>
+              <p className="text-sm text-gray-600">
+                这个文件（SHA-256 匹配）之前有过一次转录，已完成
+                {" "}
+                <span className="font-semibold">
+                  {pendingDecision.incompleteTask.completedChunks !== null &&
+                  pendingDecision.incompleteTask.totalChunks
+                    ? `${pendingDecision.incompleteTask.completedChunks}/${pendingDecision.incompleteTask.totalChunks} 个分块`
+                    : `${pendingDecision.incompleteTask.progress}%`}
+                </span>
+                。
+              </p>
+              <p className="text-sm text-gray-600">选择要怎么处理：</p>
+              <div className="flex gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={handleResume}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  直接处理（继续）
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRestart}
+                  className="flex-1 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  重新处理
+                </button>
+              </div>
+            </div>
+          )}
 
           {isWaitingForPrompt && (
             <div className="bg-white border-2 border-blue-300 rounded-lg p-4 space-y-4">

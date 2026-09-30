@@ -67,6 +67,111 @@ export async function POST(request: NextRequest) {
       // hash 失败不影响上传，只是不参与复用逻辑
     }
 
+    // ===== 查同 hash 的历史记录，给前端"是否复用"的信号 =====
+    let existingCompleted: { audioId: string; taskId: string } | null = null;
+    let existingIncomplete: {
+      audioId: string;
+      taskId: string;
+      status: string;
+      progress: number;
+      completedChunks: number | null;
+      totalChunks: number | null;
+    } | null = null;
+
+    if (contentHash) {
+      const candidates = await prisma.audioFile.findMany({
+        where: { contentHash, id: { not: audioId } },
+        include: { transcript: true },
+        orderBy: { createdAt: "asc" },
+      });
+      for (const cand of candidates) {
+        // 找最近的一条 completed transcript
+        if (cand.transcript?.status === "completed") {
+          // 找对应的 task（用 taskId 反查）
+          const t = await prisma.task.findFirst({
+            where: { audioId: cand.id },
+            orderBy: { createdAt: "desc" },
+          });
+          if (t) {
+            existingCompleted = { audioId: cand.id, taskId: t.id };
+          }
+          break;
+        }
+      }
+      // 找最近的未完成 task（status 不是 completed/failed）
+      const incompleteTask = await prisma.task.findFirst({
+        where: {
+          audioId: { in: candidates.map((c) => c.id) },
+          status: { notIn: ["completed", "failed"] },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      if (incompleteTask) {
+        const af = await prisma.audioFile.findUnique({
+          where: { id: incompleteTask.audioId! },
+        });
+        if (af) {
+          existingIncomplete = {
+            audioId: incompleteTask.audioId!,
+            taskId: incompleteTask.id,
+            status: incompleteTask.status,
+            progress: incompleteTask.progress,
+            completedChunks: af.completedChunks,
+            totalChunks: af.totalChunks,
+          };
+        }
+      }
+    }
+
+    // 如果有未完成 task，前端会走"直接处理/重新处理"分支；
+    // 这种情况下不创建新的 audioFile，避免浪费 ID。但已经写盘的文件保留（用户确认"重新处理"时直接复用）。
+    if (existingIncomplete) {
+      console.log(
+        `[Upload] Found incomplete task ${existingIncomplete.taskId} for hash ${contentHash?.slice(0, 12)}`,
+      );
+      return NextResponse.json({
+        audioId, // 当前上传的 audioId（文件已写盘）
+        fileName: file.name,
+        duration: null,
+        status: "pending",
+        contentHash,
+        // 关键信号
+        hasIncompleteTask: true,
+        incompleteTask: existingIncomplete,
+        hasCompletedTranscript: false,
+      });
+    }
+
+    if (existingCompleted) {
+      console.log(
+        `[Upload] Found completed transcript for hash ${contentHash?.slice(0, 12)}`,
+      );
+      // 仍然创建当前 audioFile 记录（保留历史），但前端会直接走复用分支
+      const audioFile = await prisma.audioFile.create({
+        data: {
+          id: audioId,
+          fileName: file.name,
+          fileSize: buffer.length,
+          duration: null,
+          format: ext.slice(1),
+          originalPath,
+          filePath: "",
+          status: "pending",
+          contentHash,
+        },
+      });
+      return NextResponse.json({
+        audioId: audioFile.id,
+        fileName: audioFile.fileName,
+        duration: audioFile.duration,
+        status: audioFile.status,
+        contentHash,
+        hasCompletedTranscript: true,
+        completedTranscriptRef: existingCompleted,
+        hasIncompleteTask: false,
+      });
+    }
+
     console.log("[Upload] Creating database record...");
     const audioFile = await prisma.audioFile.create({
       data: {
@@ -88,6 +193,9 @@ export async function POST(request: NextRequest) {
       fileName: audioFile.fileName,
       duration: audioFile.duration,
       status: audioFile.status,
+      contentHash,
+      hasIncompleteTask: false,
+      hasCompletedTranscript: false,
     });
   } catch (error) {
     console.error("Upload error:", error);
