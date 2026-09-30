@@ -156,14 +156,12 @@ export default function Home() {
 
   const handleResume = () => {
     if (!pendingDecision) return;
-    const { incompleteTask } = pendingDecision;
+    const { incompleteTask, audioId: id } = pendingDecision;
     console.log(`[Frontend] Resuming task ${incompleteTask.taskId} from progress ${incompleteTask.progress}%`);
     setPendingDecision(null);
-    setTaskId(incompleteTask.taskId);
-    setStatus("恢复转录...");
-    setProgress(incompleteTask.progress);
-    // 直接轮询已有 task，不需要重新调用 transcribe API
-    pollStatus(incompleteTask.taskId);
+    // 调用 transcribe API 触发断点逻辑（bilingual-merge 模式 + zh/en 都已就绪 → 走 LLM 合并）
+    // 后端会复用旧 task 并设置新的 taskId
+    startTranscribe(id, false);
   };
 
   const handleRestart = () => {

@@ -99,6 +99,7 @@ export async function POST(request: NextRequest) {
         }
       }
       // 找最近的未完成 task（status 不是 completed/failed）
+// waiting_for_prompt 不算未完成，但前端可以通过"继续处理"按钮主动触发新的转录
       const incompleteTask = await prisma.task.findFirst({
         where: {
           audioId: { in: candidates.map((c) => c.id) },
