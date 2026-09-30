@@ -63,8 +63,9 @@ export default function Home() {
   const [status, setStatus] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<TaskResult | null>(null);
-  // 上传时选择的转录语言。'auto' 让 whisper.cpp 逐段自动检测（中英混杂首选）。
-  const [language, setLanguage] = useState<string>("auto");
+  // 上传时选择的转录语言。'mixed' = 前 5 分钟按 zh，后面按 en（中英混杂播客首选）。
+  // 'auto' 不可靠（whisper.cpp 只会检测一次然后锁死），保留兼容用。
+  const [language, setLanguage] = useState<string>("mixed");
   // 断点状态：保存用户编辑后的提示词
   const [defaultPrompt, setDefaultPrompt] = useState<string>("");
   const [editedPrompt, setEditedPrompt] = useState<string>("");
@@ -292,9 +293,10 @@ export default function Home() {
               disabled={uploading}
               className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="auto">自动检测（推荐，中英混杂首选）</option>
+              <option value="mixed">中英混杂（前 5 分钟中文 + 之后英文，播客推荐）</option>
               <option value="zh">中文（仅）</option>
               <option value="en">English</option>
+              <option value="auto">自动检测（不可靠：whisper.cpp 只检测一次然后锁死，仅作兼容保留）</option>
               <option value="ja">日本語</option>
               <option value="ko">한국어</option>
               <option value="fr">Français</option>
@@ -303,7 +305,7 @@ export default function Home() {
               <option value="ru">Русский</option>
             </select>
             <p className="text-gray-500 text-xs mt-2">
-              之前默认硬编码中文导致英文被强转。现在默认 auto 可逐段切换语言。
+              纯中文/纯英文选对应单语言。中英混杂用 mixed（前 5 分钟按中文，之后按英文）。
             </p>
           </div>
         </div>

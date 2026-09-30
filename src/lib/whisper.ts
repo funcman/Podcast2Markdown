@@ -426,6 +426,27 @@ const CHUNK_DURATION_MS_DEFAULT = 300_000; // 5 分钟
 const CHUNK_OVERLAP_MS_DEFAULT = 30_000; // 30 秒（whisper encoder 的 30s 窗口）
 const CHUNK_CHECKPOINT_FILENAME = "checkpoint.json";
 
+// 'mixed' 语言策略：前 5 分钟按中文，后面按英文。
+// 经验上播客音频前 30-120 秒是中文导语，之后是英文主体；5 分钟边界留余量。
+// 真正场景是长访谈：主持人/嘉宾开头寒暄用中文，正文用英文。
+const MIXED_SPLIT_MS = 300_000; // 5 分钟
+
+/**
+ * 给定用户选的 language + chunk 起始毫秒，返回这个 chunk 实际应该用的 whisper.cpp language 参数。
+ *
+ * 'mixed' 模式下：
+ *   - startMs < MIXED_SPLIT_MS（前 5 分钟）→ 'zh'
+ *   - startMs >= MIXED_SPLIT_MS         → 'en'
+ *
+ * 其他情况直接透传用户选择的 language。
+ */
+function resolveChunkLanguage(language: string, startMs: number): string {
+  if (language === "mixed") {
+    return startMs < MIXED_SPLIT_MS ? "zh" : "en";
+  }
+  return language;
+}
+
 export interface CheckpointOptions {
   language?: string;
   chunkDurationMs?: number;
@@ -689,13 +710,16 @@ export async function transcribeWithCheckpoint(
         console.log(
           `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
         );
-        segs = await transcribeChunk(audioPath, startMs, actualDurationMs, language, currentModelPath);
+        // 'mixed' 模式：按 startMs 选 zh / en
+        const chunkLang = resolveChunkLanguage(language, startMs);
+        segs = await transcribeChunk(audioPath, startMs, actualDurationMs, chunkLang, currentModelPath);
       }
     } else {
       console.log(
         `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
       );
-      segs = await transcribeChunk(audioPath, startMs, actualDurationMs, language, currentModelPath);
+      const chunkLang = resolveChunkLanguage(language, startMs);
+      segs = await transcribeChunk(audioPath, startMs, actualDurationMs, chunkLang, currentModelPath);
     }
 
     chunkSegmentsCache.set(i, segs);
