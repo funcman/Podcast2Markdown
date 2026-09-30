@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
   transcribe,
@@ -8,7 +8,7 @@ import {
 } from "@/lib/whisper";
 import { recoverGpuMemory } from "@/lib/gpu-memory";
 import path from "path";
-import { writeFile, readFile, mkdir } from "fs/promises";
+import { writeFile, readFile, mkdir, rm, unlink } from "fs/promises";
 import { existsSync } from "fs";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
 
@@ -112,6 +112,22 @@ async function processTranscribe(
   console.log(
     `[Transcribe] Found audio file: ${audioFile.fileName}, size: ${audioFile.fileSize}, hash: ${audioFile.contentHash?.slice(0, 12) ?? "n/a"}`,
   );
+
+  // ===== force 重跑 = 删旧 transcript，避免下面的 create() 撞 unique constraint =====
+  if (forceTranscribe) {
+    try {
+      const deleted = await prisma.transcript.deleteMany({
+        where: { audioFileId: audioId },
+      });
+      if (deleted.count > 0) {
+        console.log(
+          `[Transcribe] forceTranscribe=true, deleted ${deleted.count} old transcript(s) for ${audioId}`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[Transcribe] failed to delete old transcript (continuing):`, e);
+    }
+  }
 
   // ===== 断点复用：检查同 contentHash 是否已有 completed Transcript =====
   // 复用策略：
@@ -261,6 +277,27 @@ async function processTranscribe(
 
   // 把短/长音频两种转录路径都包到一个函数里，便于 GPU 错误重试
   const runTranscriptionOnce = async () => {
+    // ===== force 重跑 = 清空 chunks 状态，让进度从 0 开始 =====
+    if (forceTranscribe) {
+      const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
+      const doneFile = path.join(chunksDir, "done.json");
+      const segmentsDir = path.join(chunksDir, "segments");
+      try {
+        if (existsSync(doneFile)) {
+          await unlink(doneFile);
+          console.log(`[Transcribe] forceTranscribe=true, deleted ${doneFile}`);
+        }
+        if (existsSync(segmentsDir)) {
+          await rm(segmentsDir, { recursive: true, force: true });
+          await mkdir(segmentsDir, { recursive: true });
+          console.log(`[Transcribe] forceTranscribe=true, reset segments/`);
+        }
+        completedChunksList = [];
+      } catch (e) {
+        console.warn(`[Transcribe] failed to reset chunks (continuing):`, e);
+      }
+    }
+
     if (!useCheckpoint) {
       console.log(`[Transcribe] Short audio (${audioSeconds}s), using single-shot transcribe`);
       const lastHeartbeatRef = { at: Date.now() };
@@ -389,8 +426,11 @@ async function processTranscribe(
         );
       },
       onChunkDone: async ({ index, total, startMs, durationMs, segmentCount }) => {
-        completedChunksList.push(index);
-        completedChunksList.sort((a, b) => a - b);
+        // 去重：之前曾出现过重跑场景里同一个 chunk 被 push 多次导致 done.json 膨胀
+        if (!completedChunksList.includes(index)) {
+          completedChunksList.push(index);
+          completedChunksList.sort((a, b) => a - b);
+        }
         try {
           await writeFile(
             doneFile,
@@ -468,9 +508,16 @@ async function processTranscribe(
     data: { progress: 98 },
   });
 
-  await prisma.transcript.create({
-    data: {
+  await prisma.transcript.upsert({
+    where: { audioFileId: audioId },
+    create: {
       audioFileId: audioId,
+      language: transcriptResult.language,
+      fullText: transcriptResult.fullText,
+      segments: JSON.stringify(transcriptResult.segments),
+      status: "completed",
+    },
+    update: {
       language: transcriptResult.language,
       fullText: transcriptResult.fullText,
       segments: JSON.stringify(transcriptResult.segments),

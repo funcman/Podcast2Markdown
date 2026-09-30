@@ -49,3 +49,6 @@ Thumbs.db
 
 # Sisyphus
 .sisyphus/
+
+# 临时调试脚本
+scripts/inspect-*.js
