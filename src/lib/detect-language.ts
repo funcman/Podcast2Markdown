@@ -67,10 +67,12 @@ export async function detectLanguage(
   const samplePoints = options.samplePoints ?? [0.1]; // 默认采样开头 10%
   const chunkDuration = options.durationMs ?? sampleDuration * 3;
 
-  // 并发跑所有采样点
-  const tasks = samplePoints.map(async (frac) => {
+  // 串行跑所有采样点（避免并发启动多个 whisper-cli 进程触发 GPU OOM）
+  // 早退出：一旦多数票确定，立即停止剩余采样
+  const results: (string | null)[] = [];
+  for (const frac of samplePoints) {
     const startMs = Math.floor((options.startMs ?? 0) + chunkDuration * frac);
-    return runSingleSample(
+    const r = await runSingleSample(
       audioPath,
       modelPath,
       useCuda,
@@ -80,8 +82,23 @@ export async function detectLanguage(
       startMs,
       sampleDuration,
     );
-  });
-  const results = await Promise.all(tasks);
+    results.push(r);
+
+    // 早退出：投票已有 2/3 同票 → 多数票确定
+    if (results.length >= 2) {
+      const counts = new Map<string, number>();
+      for (const x of results) {
+        if (x) counts.set(x, (counts.get(x) ?? 0) + 1);
+      }
+      const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+      if (sorted.length > 0 && sorted[0][1] >= 2) {
+        console.log(
+          `[DetectLanguage] early exit after ${results.length} samples, winner=${sorted[0][0]}`,
+        );
+        break;
+      }
+    }
+  }
 
   // 投票：出现最多的语言胜出
   const counts = new Map<string, number>();
