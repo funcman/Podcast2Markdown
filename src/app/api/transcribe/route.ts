@@ -532,9 +532,10 @@ async function processTranscribe(
   if (language === "bilingual-merge") {
     console.log(`[Transcribe] Bilingual merge mode: running zh then en`);
 
-    // force 时清掉之前的双语产物（zh + en 子目录 + done.json + 合并结果）
+    // force 时清掉之前的双语产物（zh + en 子目录 + done.json + 合并结果 + raw.txt/raw_zh/raw_en）
     if (forceTranscribe) {
       const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
+      const uploadDirForClean = path.join(process.cwd(), "uploads", audioId);
       try {
         for (const sub of ["zh", "en"]) {
           const subDir = path.join(chunksDir, "segments", sub);
@@ -544,6 +545,11 @@ async function processTranscribe(
         }
         const doneFile = path.join(chunksDir, "done.json");
         if (existsSync(doneFile)) await unlink(doneFile);
+        // 清合并产物（raw.txt 等）
+        for (const name of ["raw.txt", "raw_zh.txt", "raw_en.txt"]) {
+          const f = path.join(uploadDirForClean, name);
+          if (existsSync(f)) await unlink(f);
+        }
       } catch (e) {
         console.warn(`[Transcribe] failed to clean bilingual state:`, e);
       }
@@ -575,23 +581,34 @@ async function processTranscribe(
     await writeFile(rawEnPath, enResult.fullText, "utf-8");
     console.log(`[Transcribe] en pass done, saved to ${rawEnPath} (${enResult.fullText.length} chars)`);
 
-    // 第 3 步：LLM 合并
-    await prisma.task.update({
-      where: { id: taskId },
-      data: { progress: 90 },
-    });
-    console.log(`[Transcribe] === bilingual pass 3/3: LLM merge ===`);
-    const mergedText = await mergeBilingualTranscripts({
-      audioPath: uploadDir,
-      rawZh: zhResult.fullText,
-      rawEn: enResult.fullText,
-      apiKey: process.env.ARK_PLAN_API_KEY || process.env.ARK_API_KEY,
-      baseURL: process.env.ARK_API_BASE || "https://ark.cn-beijing.volces.com/api/coding/v3",
-      model: process.env.ARK_MODEL || "deepseek-v4-1-flash-260910",
-    });
-    console.log(
-      `[Transcribe] merge done, ${mergedText.length} chars`,
-    );
+    // 第 3 步：LLM 合并（断点：如果 raw.txt 已存在就跳过 LLM 调用）
+    const rawMergedPath = path.join(uploadDir, "raw.txt");
+    let mergedText: string;
+    if (existsSync(rawMergedPath) && !forceTranscribe) {
+      // raw.txt 已存在 + 非 force 模式 → 直接用之前合并的结果（断点续传）
+      const { readFile } = await import("fs/promises");
+      mergedText = (await readFile(rawMergedPath, "utf-8")).trim();
+      console.log(
+        `[Transcribe] === bilingual pass 3/3: using cached raw.txt (${mergedText.length} chars), skip LLM ===`,
+      );
+    } else {
+      await prisma.task.update({
+        where: { id: taskId },
+        data: { progress: 90 },
+      });
+      console.log(`[Transcribe] === bilingual pass 3/3: LLM merge ===`);
+      mergedText = await mergeBilingualTranscripts({
+        audioPath: uploadDir,
+        rawZh: zhResult.fullText,
+        rawEn: enResult.fullText,
+        apiKey: process.env.ARK_PLAN_API_KEY || process.env.ARK_API_KEY,
+        baseURL: process.env.ARK_API_BASE || "https://ark.cn-beijing.volces.com/api/coding/v3",
+        model: process.env.ARK_MODEL || "deepseek-v4-1-flash-260910",
+      });
+      console.log(
+        `[Transcribe] merge done, ${mergedText.length} chars`,
+      );
+    }
 
     // 写 raw.txt + Transcript（直接进保存分支）
     transcriptResult = {
