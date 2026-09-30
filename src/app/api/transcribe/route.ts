@@ -414,17 +414,27 @@ async function processTranscribe(
       }
     }, 30_000);
 
-    // 每 chunk 自动检测语言：用 detect-language 工具，30 秒采样。
-    // 缓存：同一个 startMs 不重复检测（同一 audio file 多 chunk 共享起始窗口）。
+    // 每 chunk 自动检测语言：用 detect-language 工具，多采样点 + 投票。
+    // 缓存：同一个 startMs 不重复检测。
     const detectedCache = new Map<number, string | null>();
-    const languageDetector = async ({ startMs }: { startMs: number }) => {
+    const languageDetector = async ({ startMs, durationMs }: { startMs: number; durationMs: number }) => {
       if (detectedCache.has(startMs)) {
         return detectedCache.get(startMs) ?? null;
       }
-      console.log(`[Transcribe] detecting language at startMs=${startMs}...`);
-      const detected = await detectLanguage(audioPath, { startMs, durationMs: 30_000 });
+      console.log(
+        `[Transcribe] detecting language in chunk starting at ${startMs}ms (${durationMs}ms long)`,
+      );
+      // 在 chunk 的 10% / 50% / 90% 各采 15 秒，3 个采样点投票
+      const detected = await detectLanguage(audioPath, {
+        startMs,
+        durationMs,
+        samplePoints: [0.1, 0.5, 0.9],
+        sampleDurationMs: 15_000,
+      });
       detectedCache.set(startMs, detected);
-      console.log(`[Transcribe] detected language at startMs=${startMs}: ${detected ?? "(failed, will fallback)"}`);
+      console.log(
+        `[Transcribe] detected language for chunk @${startMs}ms: ${detected ?? "(failed, will fallback)"}`,
+      );
       return detected;
     };
 
