@@ -163,6 +163,38 @@ if (Test-Path $OldBuildDir) {
     Remove-Item -Recurse -Force $OldBuildDir
 }
 
+# ---------------------------------------------------------------------------
+# Apply version-specific patches (optional)
+# Looks for patches/<version>/*.patch and applies them in alphabetical order.
+# If the directory is missing or empty, prints info and continues — does NOT fail.
+# ---------------------------------------------------------------------------
+$PatchesDir = Join-Path $ProjectRoot "patches\$Normalized"
+if (Test-Path $PatchesDir) {
+    $Patches = Get-ChildItem -Path $PatchesDir -Filter "*.patch" | Sort-Object Name
+    if ($Patches.Count -eq 0) {
+        Write-Host "[patches] $Normalized patch directory exists but has no .patch files, skipping" -ForegroundColor DarkGray
+    } else {
+        Write-Host "[patches] Applying $($Patches.Count) patch(es) for $Normalized" -ForegroundColor Cyan
+        Set-Location $WhisperDir
+        foreach ($Patch in $Patches) {
+            Write-Host "  -> $($Patch.Name)" -ForegroundColor Cyan
+            $ApplyOutput = git apply --check $Patch.FullName 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  git apply --check failed. Attempting 3-way merge..." -ForegroundColor Yellow
+                $ApplyOutput = git apply --3way $Patch.FullName 2>&1
+            }
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  FAILED to apply $($Patch.Name):" -ForegroundColor Red
+                Write-Host "  $ApplyOutput" -ForegroundColor Red
+                Write-Host "  Build aborted. Resolve manually or remove the offending patch." -ForegroundColor Red
+                exit 1
+            }
+        }
+    }
+} else {
+    Write-Host "[patches] $Normalized not found, building vanilla whisper.cpp" -ForegroundColor DarkGray
+}
+
 Set-Location $WhisperDir
 
 # Download model

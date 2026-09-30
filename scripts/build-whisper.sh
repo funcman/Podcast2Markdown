@@ -258,6 +258,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Apply version-specific patches (optional)
+# ---------------------------------------------------------------------------
+PATCHES_DIR="$PROJECT_ROOT/patches/$NORMALIZED"
+if [ -d "$PATCHES_DIR" ]; then
+    shopt -s nullglob
+    PATCHES=("$PATCHES_DIR"/*.patch)
+    shopt -u nullglob
+    if [ ${#PATCHES[@]} -eq 0 ]; then
+        echo "[patches] $NORMALIZED patch directory exists but has no .patch files, skipping" >&2
+    else
+        echo "[patches] Applying ${#PATCHES[@]} patch(es) for $NORMALIZED" >&2
+        cd "$WHISPER_DIR"
+        for patch in "${PATCHES[@]}"; do
+            echo "  -> $(basename "$patch")" >&2
+            if ! git apply --check "$patch" 2>/dev/null; then
+                echo "  git apply --check failed. Attempting 3-way merge..." >&2
+                if ! git apply --3way "$patch" 2>&1; then
+                    echo "  FAILED to apply $(basename "$patch")" >&2
+                    echo "  Build aborted. Resolve manually or remove the offending patch." >&2
+                    exit 1
+                fi
+            fi
+        done
+        cd "$BUILD_DIR"
+    fi
+else
+    echo "[patches] $NORMALIZED not found, building vanilla whisper.cpp" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Configure and build
 # ---------------------------------------------------------------------------
 if [ -d "$BUILD_DIR" ]; then

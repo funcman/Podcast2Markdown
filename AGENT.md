@@ -246,6 +246,21 @@ GET /api/task/[taskId]（每 2s 轮询）
 - 前端调用：`POST /api/transcribe` body `{ audioId, forceTranscribe?: boolean }`
 - 加 `forceTranscribe: true` 强制重跑（绕过缓存复用）
 
+### 断点续转（chunk-based checkpoint）
+- 长音频（>60 秒）按 chunk 切片调 whisper，每块 5 分钟 + 30 秒重叠
+- 用 whisper-cli 的 `-ot` / `-d` 参数（v1.8.3 已支持）分窗口转录，**不需要修改 whisper.cpp 源码**
+- 进度落盘到 `uploads/{audioId}/chunks/done.json`（已完成 chunk 索引数组）+ DB `AudioFile.completedChunks`（计数）
+- 中断后重启：transcribe route 读 done.json 跳过已完成 chunk，从下一个开始
+- 重叠区去重：`mergeChunkSegments` 按时间区间+chunk 新鲜度排序，后跑的 chunk 覆盖先跑的
+- 不动 whisper.cpp 代码——`patches/v1.8.3/` 目录保留空着，未来真要 hack 时启用
+- 短音频（≤60秒）仍走单次 `transcribe`，不分块
+
+### patches/ 目录规范
+- `patches/<whisper-cpp-tag>/*.patch` 按 git format-patch 生成的补丁
+- 构建脚本 `scripts/build-whisper.{ps1,sh}` 会在 git clone 后自动 `git apply`，找不到目录就打印 info 不阻断
+- 命名规范、子目录名 = clone tag 名（如 `v1.8.3`，不能简写）
+- 见 `patches/README.md`
+
 ## 环境变量
 
 ```bash

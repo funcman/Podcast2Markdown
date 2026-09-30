@@ -23,6 +23,11 @@ interface PollData {
   customPrompt?: string | null;
   result?: TaskResult | null;
   error?: string | null;
+  // 断点续转进度（短音频为 null）
+  totalChunks?: number | null;
+  completedChunks?: number | null;
+  chunkDurationMs?: number | null;
+  chunkOverlapMs?: number | null;
 }
 
 export default function Home() {

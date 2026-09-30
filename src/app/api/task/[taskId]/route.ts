@@ -21,9 +21,11 @@ export async function GET(
     let transcriptId: string | null = null;
     let transcriptPreview: string | null = null;
     let transcriptLength = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let audioFile: any = null;
 
     if (task.audioId) {
-      const audioFile = await prisma.audioFile.findUnique({
+      audioFile = await prisma.audioFile.findUnique({
         where: { id: task.audioId },
         include: { transcript: true },
       });
@@ -49,6 +51,11 @@ export async function GET(
       customPrompt: task.customPrompt,
       result: task.result ? JSON.parse(task.result) : null,
       error: task.error,
+      // 断点续转进度（短音频这些字段为 null）
+      totalChunks: audioFile?.totalChunks ?? null,
+      completedChunks: audioFile?.completedChunks ?? null,
+      chunkDurationMs: audioFile?.chunkDurationMs ?? null,
+      chunkOverlapMs: audioFile?.chunkOverlapMs ?? null,
     });
   } catch (error) {
     console.error("Task query error:", error);

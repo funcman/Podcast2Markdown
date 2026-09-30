@@ -11,12 +11,19 @@ model AudioFile {
   id            String   @id @default(cuid())
   fileName      String
   fileSize      Int
-  duration      Int?     // 转换后获取准确值
+  duration      Int?     // 转换后获取准确值（秒）
   format        String
   originalPath  String   // 原始文件路径
-  filePath      String   // 转换后的文件路径
+  filePath      String   // 转换后的 WAV 文件路径
   status        String   @default("pending") // pending, converting, ready, transcribing, completed, failed
   contentHash   String?  // 原始文件 SHA-256，用于跨任务复用 Transcript
+
+  // 断点续转进度（按 chunk 切片 + -ot/-d 增量调度）
+  totalChunks      Int?  // 总块数
+  completedChunks  Int?  // 已完成块数（每跑完一个 chunk 立即落盘 + 增 1）
+  chunkDurationMs  Int?  // 每块时长（毫秒），默认 300000 = 5 分钟
+  chunkOverlapMs    Int?  // 块间重叠（毫秒），默认 30000 = 30 秒
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

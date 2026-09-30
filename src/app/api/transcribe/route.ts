@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { transcribe, init as initWhisper } from "@/lib/whisper";
+import {
+  transcribe,
+  init as initWhisper,
+  transcribeWithCheckpoint,
+  computeTotalChunks,
+} from "@/lib/whisper";
 import path from "path";
-import { writeFile } from "fs/promises";
+import { writeFile, readFile, mkdir } from "fs/promises";
+import { existsSync } from "fs";
 import { convertToWav, getAudioInfo, isFfmpegInstalled, FfmpegNotInstalledError } from "@/lib/audio-converter";
 
 export const runtime = "nodejs";
@@ -232,26 +238,151 @@ async function processTranscribe(
   // 确保 Whisper 已初始化
   await ensureWhisperInitialized();
 
-  // 进度映射：转录 10% → 95%（留 5% 给后处理保存 transcript）。
-  // whisper 自己的进度 0–100% 会被映射到这个区间。
-  const transcriptResult = await transcribe(audioPath, {
-    language: 'zh',
-    onProgress: async (progress) => {
-      console.log(`[Transcribe] Whisper progress: ${progress}%`);
-      // 10 + progress * 0.85 → 转录时进度从 10% 爬到 95%
-      const taskProgress = Math.min(95, 10 + Math.floor(progress * 0.85));
-      console.log(`[Transcribe] Updating task progress to ${taskProgress}%`);
+  const audioSeconds = audioFile.duration || 0;
+  const CHUNK_DURATION_MS = 300_000; // 5 分钟
+  const CHUNK_OVERLAP_MS = 30_000; // 30 秒（whisper encoder 窗口）
+  // 短音频（≤ 60s）走单次 transcribe；长音频走 chunked 转录
+  const useCheckpoint = audioSeconds > 60;
+
+  let transcriptResult;
+  let totalChunks = 0;
+  let completedChunksList: number[] = [];
+
+  if (!useCheckpoint) {
+    console.log(`[Transcribe] Short audio (${audioSeconds}s), using single-shot transcribe`);
+    const lastHeartbeatRef = { at: Date.now() };
+    transcriptResult = await transcribe(audioPath, {
+      language: 'zh',
+      onProgress: async (progress) => {
+        lastHeartbeatRef.at = Date.now();
+        const taskProgress = Math.min(95, 10 + Math.floor(progress * 0.85));
+        try {
+          await prisma.task.update({ where: { id: taskId }, data: { progress: taskProgress } });
+        } catch (e) {
+          console.error(`[Transcribe] progress update failed:`, e);
+        }
+      },
+    });
+  } else {
+    // === Chunked transcription with checkpoint ===
+    console.log(`[Transcribe] Long audio (${audioSeconds}s), using chunked transcription`);
+
+    const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
+    const doneFile = path.join(chunksDir, "done.json");
+    if (!existsSync(chunksDir)) {
+      await mkdir(chunksDir, { recursive: true });
+    }
+
+    // 计算总块数
+    totalChunks = computeTotalChunks(audioSeconds, CHUNK_DURATION_MS, CHUNK_OVERLAP_MS);
+    console.log(`[Transcribe] totalChunks=${totalChunks}`);
+
+    // 读取已完成的 chunk 列表（断点续传）
+    if (existsSync(doneFile)) {
       try {
-        await prisma.task.update({
-          where: { id: taskId },
-          data: { progress: taskProgress },
-        });
+        const doneContent = await readFile(doneFile, "utf-8");
+        const parsed = JSON.parse(doneContent);
+        completedChunksList = Array.isArray(parsed.completedChunks) ? parsed.completedChunks : [];
+        console.log(
+          `[Transcribe] Resuming from checkpoint: ${completedChunksList.length} chunks already done`,
+        );
       } catch (e) {
-        // DB 写失败不能让转录崩掉，只打印
-        console.error(`[Transcribe] progress update failed:`, e);
+        console.warn(`[Transcribe] failed to read done.json, ignoring:`, e);
+        completedChunksList = [];
       }
-    },
-  });
+    }
+
+    // 写入/更新 audioFile 的 chunk metadata
+    await prisma.audioFile.update({
+      where: { id: audioId },
+      data: {
+        totalChunks,
+        completedChunks: completedChunksList.length,
+        chunkDurationMs: CHUNK_DURATION_MS,
+        chunkOverlapMs: CHUNK_OVERLAP_MS,
+      },
+    });
+
+    // 心跳：30 秒没新 chunk 完成也写一次 DB
+    const lastDbWriteAtRef = { at: Date.now() };
+    const heartbeat = setInterval(async () => {
+      if (Date.now() - lastDbWriteAtRef.at >= 30_000) {
+        try {
+          const doneNow = completedChunksList.length;
+          const taskProgress = Math.min(
+            95,
+            10 + Math.floor((doneNow / totalChunks) * 85),
+          );
+          await prisma.task.update({
+            where: { id: taskId },
+            data: {
+              progress: taskProgress,
+              // 同步 DB 计数（防止前端读不到 DB 计数）
+            },
+          });
+          await prisma.audioFile.update({
+            where: { id: audioId },
+            data: { completedChunks: doneNow },
+          });
+          lastDbWriteAtRef.at = Date.now();
+        } catch (e) {
+          console.error(`[Transcribe] heartbeat update failed:`, e);
+        }
+      }
+    }, 30_000);
+
+    transcriptResult = await transcribeWithCheckpoint(audioPath, totalChunks, {
+      language: 'zh',
+      chunkDurationMs: CHUNK_DURATION_MS,
+      chunkOverlapMs: CHUNK_OVERLAP_MS,
+      alreadyCompletedChunks: completedChunksList,
+      onChunkStart: ({ index, total, startMs, durationMs }) => {
+        console.log(
+          `[Transcribe] chunk ${index + 1}/${total} starting (startMs=${startMs}, durationMs=${durationMs})`,
+        );
+      },
+      onChunkDone: async ({ index, total, startMs, durationMs, segmentCount }) => {
+        completedChunksList.push(index);
+        completedChunksList.sort((a, b) => a - b);
+        // 立刻落盘 done.json
+        try {
+          await writeFile(
+            doneFile,
+            JSON.stringify({
+              version: 1,
+              completedChunks: completedChunksList,
+              lastUpdated: new Date().toISOString(),
+            }),
+            "utf-8",
+          );
+        } catch (e) {
+          console.error(`[Transcribe] failed to write done.json:`, e);
+        }
+        const taskProgress = Math.min(
+          95,
+          10 + Math.floor((completedChunksList.length / total) * 85),
+        );
+        console.log(
+          `[Transcribe] chunk ${index + 1}/${total} done (${segmentCount} segments), task progress=${taskProgress}%`,
+        );
+        try {
+          await prisma.task.update({
+            where: { id: taskId },
+            data: { progress: taskProgress },
+          });
+          await prisma.audioFile.update({
+            where: { id: audioId },
+            data: { completedChunks: completedChunksList.length },
+          });
+          lastDbWriteAtRef.at = Date.now();
+        } catch (e) {
+          console.error(`[Transcribe] chunk-done DB update failed:`, e);
+        }
+      },
+    });
+
+    clearInterval(heartbeat);
+  }
 
   console.log(`[Transcribe] Whisper completed, text length: ${transcriptResult.fullText.length}`);
 
