@@ -25,11 +25,20 @@ async function ensureWhisperInitialized() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { audioId, forceTranscribe } = body as { audioId?: string; forceTranscribe?: boolean };
+    const { audioId, forceTranscribe, language } = body as {
+      audioId?: string;
+      forceTranscribe?: boolean;
+      language?: string; // 'auto' | 'zh' | 'en' | 'ja' 等 whisper.cpp 支持的语言代码
+    };
 
     if (!audioId) {
       return NextResponse.json({ error: "audioId required" }, { status: 400 });
     }
+
+    // 默认 auto：让 whisper.cpp 自己逐段检测语言
+    // 中文播客纯中文也 OK（auto 检测准确率很高）
+    // 中英混杂必须 auto（之前硬编码 'zh' 把英文强转中文造成灾难）
+    const effectiveLanguage = language || "auto";
 
     // 创建任务记录
     const task = await prisma.task.create({
@@ -43,9 +52,9 @@ export async function POST(request: NextRequest) {
 
     // 异步处理转录
     console.log(
-      `[Transcribe] Created task ${task.id}, audioId: ${audioId}, forceTranscribe=${!!forceTranscribe}`,
+      `[Transcribe] Created task ${task.id}, audioId: ${audioId}, forceTranscribe=${!!forceTranscribe}, language=${effectiveLanguage}`,
     );
-    processTranscribe(task.id, audioId, !!forceTranscribe).catch((err) => {
+    processTranscribe(task.id, audioId, !!forceTranscribe, effectiveLanguage).catch((err) => {
       console.error(`[Transcribe] Task ${task.id} failed:`, err.message);
       // task 标 failed
       prisma.task.update({
@@ -70,6 +79,7 @@ async function processTranscribe(
   taskId: string,
   audioId: string,
   forceTranscribe: boolean,
+  language: string = "auto",
 ) {
   console.log(`[Transcribe] Task ${taskId} started for audio ${audioId}`);
 
@@ -252,7 +262,7 @@ async function processTranscribe(
     console.log(`[Transcribe] Short audio (${audioSeconds}s), using single-shot transcribe`);
     const lastHeartbeatRef = { at: Date.now() };
     transcriptResult = await transcribe(audioPath, {
-      language: 'zh',
+      language, // 用户在上传时指定，'auto' / 'zh' / 'en' 等
       onProgress: async (progress) => {
         lastHeartbeatRef.at = Date.now();
         const taskProgress = Math.min(95, 10 + Math.floor(progress * 0.85));
@@ -366,7 +376,7 @@ async function processTranscribe(
     }, 30_000);
 
     transcriptResult = await transcribeWithCheckpoint(audioPath, totalChunks, {
-      language: 'zh',
+      language, // 同上，用户指定
       chunkDurationMs: CHUNK_DURATION_MS,
       chunkOverlapMs: CHUNK_OVERLAP_MS,
       alreadyCompletedChunks: completedChunksList,

@@ -63,6 +63,8 @@ export default function Home() {
   const [status, setStatus] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<TaskResult | null>(null);
+  // 上传时选择的转录语言。'auto' 让 whisper.cpp 逐段自动检测（中英混杂首选）。
+  const [language, setLanguage] = useState<string>("auto");
   // 断点状态：保存用户编辑后的提示词
   const [defaultPrompt, setDefaultPrompt] = useState<string>("");
   const [editedPrompt, setEditedPrompt] = useState<string>("");
@@ -144,7 +146,7 @@ export default function Home() {
     const res = await fetch("/api/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audioId: id, forceTranscribe: force }),
+      body: JSON.stringify({ audioId: id, forceTranscribe: force, language }),
     });
     const data = await res.json();
     setTaskId(data.taskId);
@@ -257,21 +259,53 @@ export default function Home() {
       <h1 className="text-3xl font-bold mb-8">Podcast2Markdown</h1>
 
       {!audioId ? (
-        <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center">
-          <input
-            type="file"
-            accept="audio/*"
-            onChange={(e) => {
-              if (e.target.files?.[0]) handleUpload(e.target.files[0]);
-            }}
-            disabled={uploading}
-            className="hidden"
-            id="audio-upload"
-          />
-          <label htmlFor="audio-upload" className="cursor-pointer text-blue-600 hover:text-blue-800">
-            {uploading ? "上传中..." : "点击选择音频文件 或 拖拽到此处"}
-          </label>
-          <p className="text-gray-500 text-sm mt-2">支持 MP3, WAV, M4A 等格式</p>
+        <div className="space-y-4">
+          <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center">
+            <input
+              type="file"
+              accept="audio/*"
+              onChange={(e) => {
+                if (e.target.files?.[0]) handleUpload(e.target.files[0]);
+              }}
+              disabled={uploading}
+              className="hidden"
+              id="audio-upload"
+            />
+            <label htmlFor="audio-upload" className="cursor-pointer text-blue-600 hover:text-blue-800">
+              {uploading ? "上传中..." : "点击选择音频文件 或 拖拽到此处"}
+            </label>
+            <p className="text-gray-500 text-sm mt-2">支持 MP3, WAV, M4A 等格式</p>
+          </div>
+
+          {/* 转录语言选择 */}
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <label
+              htmlFor="language-select"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              转录语言
+            </label>
+            <select
+              id="language-select"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              disabled={uploading}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="auto">自动检测（推荐，中英混杂首选）</option>
+              <option value="zh">中文（仅）</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+              <option value="ru">Русский</option>
+            </select>
+            <p className="text-gray-500 text-xs mt-2">
+              之前默认硬编码中文导致英文被强转。现在默认 auto 可逐段切换语言。
+            </p>
+          </div>
         </div>
       ) : (
         <div className="space-y-4">
