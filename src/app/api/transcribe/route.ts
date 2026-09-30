@@ -532,6 +532,55 @@ async function processTranscribe(
   if (language === "bilingual-merge") {
     console.log(`[Transcribe] Bilingual merge mode: running zh then en`);
 
+    const uploadDir = path.join(process.cwd(), "uploads", audioId);
+    const rawZhPath = path.join(uploadDir, "raw_zh.txt");
+    const rawEnPath = path.join(uploadDir, "raw_en.txt");
+    const rawMergedPath = path.join(uploadDir, "raw.txt");
+
+    // ===== 断点：两遍产物都已就绪 + raw.txt 过期 → 只跑 LLM 合并 =====
+    const zhReady = existsSync(rawZhPath);
+    const enReady = existsSync(rawEnPath);
+    let rawOutdated = false;
+    if (zhReady && enReady) {
+      if (!existsSync(rawMergedPath)) {
+        rawOutdated = true;
+      } else {
+        const { stat: fstat } = await import("fs/promises");
+        const zhT = (await fstat(rawZhPath)).mtimeMs;
+        const enT = (await fstat(rawEnPath)).mtimeMs;
+        const rawT = (await fstat(rawMergedPath)).mtimeMs;
+        rawOutdated = rawT < zhT || rawT < enT;
+      }
+    }
+    const skipToLLM = !forceTranscribe && zhReady && enReady && rawOutdated;
+
+    if (skipToLLM) {
+      console.log(
+        `[Transcribe] 两遍产物已就绪（raw_zh.txt + raw_en.txt），跳过转录只跑 LLM 合并`,
+      );
+      await prisma.task.update({ where: { id: taskId }, data: { progress: 85 } });
+      const { readFile } = await import("fs/promises");
+      const rawZh = await readFile(rawZhPath, "utf-8");
+      const rawEn = await readFile(rawEnPath, "utf-8");
+      const mergedText = await mergeBilingualTranscripts({
+        audioPath: uploadDir,
+        rawZh,
+        rawEn,
+        apiKey: process.env.ARK_PLAN_API_KEY || process.env.ARK_API_KEY,
+        baseURL: process.env.ARK_API_BASE || "https://ark.cn-beijing.volces.com/api/coding/v3",
+        model: process.env.ARK_MODEL || "deepseek-v4-1-flash-260910",
+      });
+      console.log(`[Transcribe] merge done, ${mergedText.length} chars`);
+      transcriptResult = {
+        language: "zh+en",
+        fullText: mergedText,
+        segments: [],
+      };
+      // 直接进入尾部保存分支（跳过 zh + en 路径）
+    } else {
+    console.log(`[Transcribe] 两遍产物未就绪，进入完整 zh + en + LLM 流程`);
+    console.log(`[Transcribe] Bilingual merge mode: running zh then en`);
+
     // force 时清掉之前的双语产物（zh + en 子目录 + done.json + 合并结果 + raw.txt/raw_zh/raw_en）
     if (forceTranscribe) {
       const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
@@ -616,6 +665,7 @@ async function processTranscribe(
       fullText: mergedText,
       segments: zhResult.segments, // 用 zh 的 segments（时间戳对齐），不强求 merge
     };
+    }  // 关闭 else (skipToLLM === false)
     // 跳到下面的保存分支
   } else {
   try {
