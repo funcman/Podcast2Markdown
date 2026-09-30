@@ -71,7 +71,9 @@ ${rawEn}
         { role: "user", content: userPrompt },
       ],
       temperature: 0.1,
-      max_tokens: 8000,
+      // DeepSeek-V4 是 reasoning model，会在 reasoning_content 上花大量 token。
+      // 8000 不够——content 会被截断到空。给到 32000 让 reasoning + content 都够。
+      max_tokens: 32000,
     }),
   });
 
