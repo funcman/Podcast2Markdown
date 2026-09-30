@@ -161,6 +161,9 @@ async function runSingleSample(
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // Windows 下 whisper.cpp 写 stderr 时未 flush，pipe 模式只截获部分。
+      // 用 'inherit' 也只能收到部分（其他进程消费掉了）。
+      // 解决：改读 JSON 输出文件，不依赖 stderr 实时流。
     });
 
     child.stderr.on('data', (data: Buffer) => {
@@ -172,7 +175,11 @@ async function runSingleSample(
     });
 
     child.on('close', () => {
-      const detected = parseDetectedLanguage(stderr);
+      // 优先从 JSON 文件读 language 字段（更可靠，避免 stderr 不 flush 问题）
+      let detected: string | null = parseDetectedLanguage(stderr);
+      if (!detected) {
+        detected = readLanguageFromJson(outputJsonPath);
+      }
       // 清理临时 json
       try {
         const fs = require('fs');
@@ -185,6 +192,22 @@ async function runSingleSample(
 
     child.on('error', () => resolveResult(null));
   });
+}
+
+/**
+ * 从 whisper.cpp 的 JSON 输出文件里读 result.language。
+ * whisper.cpp 在 `-oj` 输出里包含 { result: { language: "zh" }, ... }
+ */
+function readLanguageFromJson(jsonPath: string): string | null {
+  try {
+    const fs = require('fs');
+    if (!fs.existsSync(jsonPath)) return null;
+    const raw = fs.readFileSync(jsonPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed?.result?.language || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
