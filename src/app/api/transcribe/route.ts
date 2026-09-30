@@ -269,9 +269,43 @@ async function processTranscribe(
 
     const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
     const doneFile = path.join(chunksDir, "done.json");
+    const segmentsDir = path.join(chunksDir, "segments");
     if (!existsSync(chunksDir)) {
       await mkdir(chunksDir, { recursive: true });
     }
+    if (!existsSync(segmentsDir)) {
+      await mkdir(segmentsDir, { recursive: true });
+    }
+
+    /**
+     * 从 segments/<i>.json 读已持久化的 chunk segments。
+     * 返回 null 表示"没缓存"，whisper.ts 会重跑这个 chunk。
+     */
+    const loadChunkSegments = async (chunkIndex: number) => {
+      const file = path.join(segmentsDir, `${chunkIndex}.json`);
+      if (!existsSync(file)) return null;
+      try {
+        const content = await readFile(file, "utf-8");
+        const parsed = JSON.parse(content);
+        if (!Array.isArray(parsed)) return null;
+        return parsed as Array<{ start: number; end: number; text: string }>;
+      } catch (e) {
+        console.warn(`[Transcribe] failed to read segments/${chunkIndex}.json:`, e);
+        return null;
+      }
+    };
+
+    /**
+     * 把单个 chunk 的 segments 写到 segments/<i>.json。
+     * 即使 done.json 写成功这个失败也不应该让转录崩——这只是缓存。
+     */
+    const persistChunkSegments = async (
+      chunkIndex: number,
+      segs: Array<{ start: number; end: number; text: string }>,
+    ) => {
+      const file = path.join(segmentsDir, `${chunkIndex}.json`);
+      await writeFile(file, JSON.stringify(segs), "utf-8");
+    };
 
     // 计算总块数
     totalChunks = computeTotalChunks(audioSeconds, CHUNK_DURATION_MS, CHUNK_OVERLAP_MS);
@@ -336,6 +370,8 @@ async function processTranscribe(
       chunkDurationMs: CHUNK_DURATION_MS,
       chunkOverlapMs: CHUNK_OVERLAP_MS,
       alreadyCompletedChunks: completedChunksList,
+      loadChunkSegments, // 优先复用 segments_N.json，重启不丢内容
+      onChunkSegmentsPersist: persistChunkSegments,
       onChunkStart: ({ index, total, startMs, durationMs }) => {
         console.log(
           `[Transcribe] chunk ${index + 1}/${total} starting (startMs=${startMs}, durationMs=${durationMs})`,

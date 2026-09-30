@@ -252,7 +252,9 @@ GET /api/task/[taskId]（每 2s 轮询）
 - 长音频（>60 秒）按 chunk 切片调 whisper，每块 5 分钟 + 30 秒重叠
 - 用 whisper-cli 的 `-ot` / `-d` 参数（v1.8.3 已支持）分窗口转录，**不需要修改 whisper.cpp 源码**
 - 进度落盘到 `uploads/{audioId}/chunks/done.json`（已完成 chunk 索引数组）+ DB `AudioFile.completedChunks`（计数）
-- 中断后重启：transcribe route 读 done.json 跳过已完成 chunk，从下一个开始
+- **segments 内容也按 chunk 持久化**到 `uploads/{audioId}/chunks/segments/<i>.json`——这是关键，不存的话重启会丢失已完成 chunk 的识别结果
+- 中断后重启：transcribe route 同时读 `done.json` 和 `segments/<i>.json`，**优先复用缓存的 segments**，不重跑、不丢内容
+- `loadChunkSegments` 返回 null → 重跑（向后兼容旧任务：只有 done.json 没有 segments）
 - 重叠区去重：`mergeChunkSegments` 按时间区间+chunk 新鲜度排序，后跑的 chunk 覆盖先跑的
 - 不动 whisper.cpp 代码——`patches/v1.8.3/` 目录保留空着，未来真要 hack 时启用
 - 短音频（≤60秒）仍走单次 `transcribe`，不分块

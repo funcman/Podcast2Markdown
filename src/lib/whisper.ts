@@ -433,6 +433,23 @@ export interface CheckpointOptions {
    */
   alreadyCompletedChunks?: number[];
   onProgress?: (info: { completedChunks: number; totalChunks: number; currentChunk: number }) => void;
+  /**
+   * 尝试从外部存储加载已缓存的 chunk segments。
+   * 返回 null 表示"没缓存"，whisper.ts 会重新跑这个 chunk。
+   * 返回 segments 数组表示"已持久化"，whisper.ts 直接用，不会重跑。
+   *
+   * 这个机制让"继续"按钮能真正续传而不丢内容：
+   *   1. 每次 chunk 完成时，调用方通过 onChunkSegmentsPersist 把 segments 落盘
+   *   2. 重启时 transcribeHere 调 loadChunkSegments 把缓存读回
+   *   3. whisper.ts 跳过对应 chunk 的实际重跑
+   */
+  loadChunkSegments?: (chunkIndex: number) => Promise<TranscriptSegment[] | null>;
+  /**
+   * 每次 chunk 完成（无论是不是新跑的还是从缓存读的）触发一次，
+   * 调用方负责把 segments 写到自己的存储里（典型：uploads/<id>/chunks/segments/<i>.json）。
+   * 如果报错应该 swallow——这只是缓存，不应该让转录整体失败。
+   */
+  onChunkSegmentsPersist?: (chunkIndex: number, segments: TranscriptSegment[]) => Promise<void>;
 }
 
 export interface ChunkCheckpoint {
@@ -607,6 +624,8 @@ export async function transcribeWithCheckpoint(
     shouldAbort,
     alreadyCompletedChunks = [],
     onProgress,
+    loadChunkSegments,
+    onChunkSegmentsPersist,
   } = options;
 
   // 总音频时长（毫秒）
@@ -632,10 +651,6 @@ export async function transcribeWithCheckpoint(
     if (shouldAbort && shouldAbort()) {
       throw new Error('transcription aborted by caller');
     }
-    if (alreadyCompletedChunks.includes(i)) {
-      console.log(`[Whisper] chunk ${i}/${totalChunks} already done, skipping`);
-      continue;
-    }
 
     const startMs = i * chunkStepMs;
     // 最后一个 chunk 的实际时长 = 剩余音频（可能 < chunkDurationMs）
@@ -646,12 +661,46 @@ export async function transcribeWithCheckpoint(
     }
 
     onChunkStart?.({ index: i, total: totalChunks, startMs, durationMs: actualDurationMs });
-    console.log(
-      `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
-    );
 
-    const segs = await transcribeChunk(audioPath, startMs, actualDurationMs, language, currentModelPath);
+    // 优先级 1：调用方传了 alreadyCompletedChunks + loadChunkSegments() 返回非 null
+    //   → 直接用缓存的 segments，跳过实际转录
+    // 优先级 2：调用方只传了 alreadyCompletedChunks 但没缓存
+    //   → 重新跑（whisper.cpp 的 -ot/-d 是幂等的，结果一致）
+    // 优先级 3：不在 alreadyCompletedChunks 里
+    //   → 重新跑
+    let segs: TranscriptSegment[];
+    if (alreadyCompletedChunks.includes(i) && loadChunkSegments) {
+      const cached = await loadChunkSegments(i);
+      if (cached && cached.length > 0) {
+        console.log(
+          `[Whisper] chunk ${i}/${totalChunks} loaded from cache (${cached.length} segments)`,
+        );
+        segs = cached;
+      } else {
+        console.log(
+          `[Whisper] chunk ${i}/${totalChunks} marked done but no cached segments, re-running`,
+        );
+        console.log(
+          `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
+        );
+        segs = await transcribeChunk(audioPath, startMs, actualDurationMs, language, currentModelPath);
+      }
+    } else {
+      console.log(
+        `[Whisper] running chunk ${i + 1}/${totalChunks}: startMs=${startMs}, durationMs=${actualDurationMs}`,
+      );
+      segs = await transcribeChunk(audioPath, startMs, actualDurationMs, language, currentModelPath);
+    }
+
     chunkSegmentsCache.set(i, segs);
+    // 让调用方把 segments 持久化（fire-and-forget，不阻塞）
+    if (onChunkSegmentsPersist) {
+      try {
+        await onChunkSegmentsPersist(i, segs);
+      } catch (e) {
+        console.error(`[Whisper] failed to persist segments for chunk ${i}:`, e);
+      }
+    }
     onChunkDone?.({ index: i, total: totalChunks, startMs, durationMs: actualDurationMs, segmentCount: segs.length });
     onProgress?.({ completedChunks: i + 1, totalChunks, currentChunk: i });
   }
