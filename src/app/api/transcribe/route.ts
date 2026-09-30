@@ -275,9 +275,13 @@ async function processTranscribe(
   let transcriptResult;
   let totalChunks = 0;
   let completedChunksList: number[] = [];
+  let actuallyCompletedChunks = 0; // 只在 onChunkDone 真正完成时 +1，避免 force 时被 done.json 误导
 
   // 把短/长音频两种转录路径都包到一个函数里，便于 GPU 错误重试
   const runTranscriptionOnce = async () => {
+    // 重置：本轮（GPU 重试也算新的一轮）从 0 开始计
+    actuallyCompletedChunks = 0;
+
     // ===== force 重跑 = 清空 chunks 状态，让进度从 0 开始 =====
     if (forceTranscribe) {
       const chunksDir = path.join(process.cwd(), "uploads", audioId, "chunks");
@@ -383,7 +387,7 @@ async function processTranscribe(
       where: { id: audioId },
       data: {
         totalChunks,
-        completedChunks: completedChunksList.length,
+        completedChunks: actuallyCompletedChunks,
         chunkDurationMs: CHUNK_DURATION_MS,
         chunkOverlapMs: CHUNK_OVERLAP_MS,
       },
@@ -394,7 +398,7 @@ async function processTranscribe(
     const heartbeat = setInterval(async () => {
       if (Date.now() - lastDbWriteAtRef.at >= 30_000) {
         try {
-          const doneNow = completedChunksList.length;
+          const doneNow = actuallyCompletedChunks; // 不读 done.json，避免 force 时显示 17/17
           const taskProgress = Math.min(
             95,
             10 + Math.floor((doneNow / totalChunks) * 85),
@@ -458,6 +462,8 @@ async function processTranscribe(
           completedChunksList.push(index);
           completedChunksList.sort((a, b) => a - b);
         }
+        // 实际完成的 chunk 计数：每次 onChunkDone 真正跑完 +1
+        actuallyCompletedChunks++;
         try {
           await writeFile(
             doneFile,
@@ -473,7 +479,7 @@ async function processTranscribe(
         }
         const taskProgress = Math.min(
           95,
-          10 + Math.floor((completedChunksList.length / total) * 85),
+          10 + Math.floor((actuallyCompletedChunks / total) * 85),
         );
         console.log(
           `[Transcribe] chunk ${index + 1}/${total} done (${segmentCount} segments), task progress=${taskProgress}%`,
@@ -485,7 +491,7 @@ async function processTranscribe(
           });
           await prisma.audioFile.update({
             where: { id: audioId },
-            data: { completedChunks: completedChunksList.length },
+            data: { completedChunks: actuallyCompletedChunks },
           });
           lastDbWriteAtRef.at = Date.now();
         } catch (e) {
