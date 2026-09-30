@@ -233,6 +233,18 @@ export async function transcribe(
       // 老版本 whisper.cpp 没有 --no-beam-search 这个 flag，所以显式传 -bs/-bo。
       '-bs', '1',
       '-bo', '1',
+      // 防 token 循环。whisper 大模型在低置信度+重复语音片段（如主播说
+      // "点赞、订阅、转发"）下会产生 self-reinforcing 循环：
+      //   上一个 segment 文本被作为 prompt 喂回去 → model 强化这个模式 →
+      //   整个文件输出都是同一句话重复几百遍。
+      // -mc 0 强制每个 segment 独立，不带跨段 context，从根上断循环。
+      // 副作用：段间过渡略生硬（"那个那个" 之类填充词不会从上一段带过来），
+      // 对准确率影响可忽略。
+      '-mc', '0',
+      // 防 fallback hallucination。低置信度时温度 fallback 会用 0.2/0.4/0.8
+      // 多次重试，重试结果经常是任意乱码。-nf 关掉这个 fallback，
+      // 让模型坚持 greedy 解码，错误概率反而降低。
+      '-nf',
     ];
 
     if (!WHISPER_USE_CUDA) {
@@ -459,6 +471,9 @@ async function transcribeChunk(
       '-of', join(outputDir, `${audioName}${chunkSuffix}`),
       '-bs', '1',
       '-bo', '1',
+      // 与 transcribe() 保持一致：防 token 循环 + 防 fallback hallucination
+      '-mc', '0',
+      '-nf',
       '-ot', String(startMs),
       '-d', String(durationMs),
     ];
