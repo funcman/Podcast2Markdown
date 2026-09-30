@@ -537,22 +537,12 @@ async function processTranscribe(
     const rawEnPath = path.join(uploadDir, "raw_en.txt");
     const rawMergedPath = path.join(uploadDir, "raw.txt");
 
-    // ===== 断点：两遍产物都已就绪 + raw.txt 过期 → 只跑 LLM 合并 =====
+    // ===== 断点：两遍产物都已就绪 → 必走 LLM 合并 =====
+    // 用户语义：选了 bilingual-merge + 两遍都跑完了 → 继续处理必重跑 LLM 合并
+    // 不管 raw.txt 是否已存在都重跑（LLM 输出非确定性，每次内容略不同，用户主动触发合并）
     const zhReady = existsSync(rawZhPath);
     const enReady = existsSync(rawEnPath);
-    let rawOutdated = false;
-    if (zhReady && enReady) {
-      if (!existsSync(rawMergedPath)) {
-        rawOutdated = true;
-      } else {
-        const { stat: fstat } = await import("fs/promises");
-        const zhT = (await fstat(rawZhPath)).mtimeMs;
-        const enT = (await fstat(rawEnPath)).mtimeMs;
-        const rawT = (await fstat(rawMergedPath)).mtimeMs;
-        rawOutdated = rawT < zhT || rawT < enT;
-      }
-    }
-    const skipToLLM = !forceTranscribe && zhReady && enReady && rawOutdated;
+    const skipToLLM = !forceTranscribe && zhReady && enReady;
 
     if (skipToLLM) {
       console.log(
