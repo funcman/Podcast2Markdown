@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, rm } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
@@ -124,13 +124,23 @@ export async function POST(request: NextRequest) {
     }
 
     // 如果有未完成 task，前端会走"直接处理/重新处理"分支；
-    // 这种情况下不创建新的 audioFile，避免浪费 ID。但已经写盘的文件保留（用户确认"重新处理"时直接复用）。
+    // 这种情况下：
+    //   1. **不创建** 新的 audioFile（旧的 audioFile 记录 + 旧文件已经存在）
+    //   2. **删除** 刚上传到新 audioId 目录的文件，避免磁盘空间浪费
+    //   3. 返回**旧** audioId，前端用旧 ID 走后续流程
     if (existingIncomplete) {
       console.log(
-        `[Upload] Found incomplete task ${existingIncomplete.taskId} for hash ${contentHash?.slice(0, 12)}`,
+        `[Upload] Found incomplete task ${existingIncomplete.taskId} for hash ${contentHash?.slice(0, 12)}, reusing audioId=${existingIncomplete.audioId}`,
       );
+      // 清理刚上传的文件和空目录
+      try {
+        await rm(uploadDir, { recursive: true, force: true });
+        console.log(`[Upload] Cleaned up ${uploadDir}`);
+      } catch (e) {
+        console.warn(`[Upload] failed to cleanup ${uploadDir}:`, e);
+      }
       return NextResponse.json({
-        audioId, // 当前上传的 audioId（文件已写盘）
+        audioId: existingIncomplete.audioId, // 关键：返回旧的 audioId，不是新上传的
         fileName: file.name,
         duration: null,
         status: "pending",
